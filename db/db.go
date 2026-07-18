@@ -88,7 +88,7 @@ func Init(ctx context.Context) func() {
 		log.Info(ctx, "Upgrading DB Schema to latest version")
 	}
 	goose.SetLogger(&logAdapter{ctx: ctx, silent: schemaEmpty})
-	err = goose.UpContext(ctx, db, migrationsFolder)
+	err = applyMigrations(ctx, db, migrationsFolder)
 	if err != nil {
 		log.Fatal(ctx, "Failed to apply new migrations", err)
 	}
@@ -104,6 +104,10 @@ func Init(ctx context.Context) func() {
 	return func() {
 		Close(ctx)
 	}
+}
+
+func applyMigrations(ctx context.Context, database *sql.DB, folder string) error {
+	return goose.UpContext(ctx, database, folder, goose.WithAllowMissing())
 }
 
 type statusLogger struct{ numPending int }
