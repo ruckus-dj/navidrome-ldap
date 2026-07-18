@@ -283,6 +283,23 @@ var _ = Describe("Configuration", func() {
 		})
 	})
 
+	Describe("LDAP environment configuration", func() {
+		It("loads liveness and directory state settings from environment variables", func() {
+			GinkgoT().Setenv("ND_LDAP_LIVENESSSCHEDULE", "15m")
+			GinkgoT().Setenv("ND_LDAP_DISABLEDFILTER", "(loginShell=/sbin/nologin)")
+			GinkgoT().Setenv("ND_LDAP_ADMINGROUP", "cn=navidrome-admins,ou=groups,dc=example,dc=org")
+			GinkgoT().Setenv("ND_LDAP_ADMINFILTER", "(&(memberOf=cn=navidrome-admins,ou=groups,dc=example,dc=org)(uid=%s))")
+
+			conf.InitConfig("", true)
+			conf.Load(true)
+
+			Expect(conf.Server.LDAP.LivenessSchedule).To(Equal("15m"))
+			Expect(conf.Server.LDAP.DisabledFilter).To(Equal("(loginShell=/sbin/nologin)"))
+			Expect(conf.Server.LDAP.AdminGroup).To(Equal("cn=navidrome-admins,ou=groups,dc=example,dc=org"))
+			Expect(conf.Server.LDAP.AdminFilter).To(Equal("(&(memberOf=cn=navidrome-admins,ou=groups,dc=example,dc=org)(uid=%s))"))
+		})
+	})
+
 	Describe("EnforceNonRootUser", func() {
 		It("defaults to false", func() {
 			conf.Load(true)
