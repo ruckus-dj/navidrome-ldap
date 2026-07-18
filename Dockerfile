@@ -156,7 +156,7 @@ COPY --from=build /out /
 ### Build Final Image
 FROM public.ecr.aws/docker/library/alpine:3.20 AS final
 LABEL maintainer="deluan@navidrome.org"
-LABEL org.opencontainers.image.source="https://github.com/navidrome/navidrome"
+LABEL org.opencontainers.image.source="https://github.com/ruckus-dj/navidrome-ldap"
 
 # Install runtime dependencies
 # - libwebp + symlinks: enables native WebP encoding via purego/dlopen
@@ -181,4 +181,3 @@ WORKDIR /app
 ENV PATH="/app:${PATH}"
 
 ENTRYPOINT ["/app/navidrome"]
-

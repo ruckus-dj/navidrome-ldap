@@ -37,7 +37,7 @@ spec:
     spec:
       containers:
         - name: navidrome
-          image: ghcr.io/navidrome/navidrome:0.49.3
+          image: ghcr.io/ruckus-dj/navidrome-ldap:latest
           ports:
             - containerPort: 4533
           env:

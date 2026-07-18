@@ -20,7 +20,7 @@ services:
 
   navidrome:
     container_name: "navidrome"
-    image: deluan/navidrome:latest
+    image: ghcr.io/ruckus-dj/navidrome-ldap:latest
     restart: unless-stopped
     read_only: true
     # user: 1000:1000
