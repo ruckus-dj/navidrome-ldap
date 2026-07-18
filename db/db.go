@@ -27,6 +27,11 @@ var embedMigrations embed.FS
 
 const migrationsFolder = "migrations"
 
+const (
+	ldapAppPasswordMigrationVersion int64 = 20260427000000
+	ldapAuthTypeMigrationVersion    int64 = 20260430000000
+)
+
 func Db() *sql.DB {
 	return singleton.GetInstance(func() *sql.DB {
 		sql.Register(Driver, &sqlite3.SQLiteDriver{
@@ -107,6 +112,53 @@ func Init(ctx context.Context) func() {
 }
 
 func applyMigrations(ctx context.Context, database *sql.DB, folder string) error {
+	currentVersion, err := goose.GetDBVersionContext(ctx, database)
+	if err != nil {
+		return fmt.Errorf("get current migration version: %w", err)
+	}
+	if currentVersion == 0 {
+		return goose.UpContext(ctx, database, folder)
+	}
+	migrations, err := goose.CollectMigrations(folder, 0, currentVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
+	}
+	migrationTable := goose.TableName()
+	rows, err := database.QueryContext(ctx, fmt.Sprintf(`
+SELECT version_id
+FROM %s
+WHERE is_applied = true
+  AND id IN (SELECT MAX(id) FROM %s GROUP BY version_id)`, migrationTable, migrationTable))
+	if err != nil {
+		return fmt.Errorf("list applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[int64]bool)
+	for rows.Next() {
+		var version int64
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("scan applied migration: %w", err)
+		}
+		applied[version] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate applied migrations: %w", err)
+	}
+
+	var unexpected []int64
+	for _, migration := range migrations {
+		if applied[migration.Version] || migration.Version >= currentVersion {
+			continue
+		}
+		if migration.Version != ldapAppPasswordMigrationVersion && migration.Version != ldapAuthTypeMigrationVersion {
+			unexpected = append(unexpected, migration.Version)
+		}
+	}
+	if len(unexpected) > 0 {
+		return fmt.Errorf("unexpected missing migrations before current version %d: %v", currentVersion, unexpected)
+	}
+
 	return goose.UpContext(ctx, database, folder, goose.WithAllowMissing())
 }
 
