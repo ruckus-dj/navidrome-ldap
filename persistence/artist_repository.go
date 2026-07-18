@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/utils"
 	"github.com/navidrome/navidrome/utils/slice"
+	"github.com/navidrome/navidrome/utils/str"
 	"github.com/pocketbase/dbx"
 )
 
@@ -102,8 +104,10 @@ func (a *dbArtist) PostMapArgs(m map[string]any) error {
 	}
 	similarArtists, _ := json.Marshal(sa)
 	m["similar_artists"] = string(similarArtists)
+	// When adding a derived column here, also add it to the scanner's artist Put column list
+	// in phase_1_folders.go, or rescans will never update it (how search_normalized went stale).
 	m["full_text"] = formatFullText(a.Name, a.SortArtistName)
-	m["search_normalized"] = normalizeForFTS(a.Name)
+	m["search_normalized"] = str.NormalizeForFTS(a.Name)
 
 	// Do not override the sort_artist_name and mbz_artist_id fields if they are empty
 	// TODO: Better way to handle this?
@@ -201,7 +205,11 @@ func (r *artistRepository) selectArtist(options ...model.QueryOptions) SelectBui
 func (r *artistRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	query := r.newSelect()
 	query = r.applyLibraryFilterToArtistQuery(query)
-	query = r.withAnnotation(query, "artist.id")
+	// Only the annotation join is gated; the library_artist join above (and its count(distinct))
+	// must stay, since an artist can span multiple libraries.
+	if filtersNeedAnnotation(r.applyFilters(query, options...)) {
+		query = r.withAnnotation(query, "artist.id")
+	}
 	return r.count(query, options...)
 }
 
@@ -254,6 +262,19 @@ func (r *artistRepository) GetAll(options ...model.QueryOptions) (model.Artists,
 	}
 	res := dba.toModels()
 	return res, err
+}
+
+func (r *artistRepository) GetCursor(options ...model.QueryOptions) (model.ArtistCursor, error) {
+	sel := r.selectArtist(options...)
+	cursor, err := queryWithStableResults[dbArtist](r.sqlRepository, sel)
+	if err != nil {
+		return nil, err
+	}
+	return wrapArtistCursor(cursor), nil
+}
+
+func wrapArtistCursor(cursor iter.Seq2[dbArtist, error]) model.ArtistCursor {
+	return model.ArtistCursor(wrapCursor(cursor, func(a dbArtist) *model.Artist { return a.Artist }))
 }
 
 func (r *artistRepository) getIndexKey(a model.Artist) string {
@@ -662,32 +683,6 @@ func isLibraryIDFilter(filter Sqlizer) bool {
 	}
 	_, ok = eq["library_id"]
 	return ok
-}
-
-// userSeesAllLibraries reports whether the visible set already covers every library, so a search
-// needs no library filter at all.
-func (r *artistRepository) userSeesAllLibraries(visible []int) bool {
-	user := loggedUser(r.ctx)
-	if user.IsAdmin || user.ID == invalidUserId {
-		return true // visible is the whole library table
-	}
-	total, err := NewLibraryRepository(r.ctx, r.db).CountAll()
-	if err != nil || total == 0 {
-		return false
-	}
-	return int64(len(visible)) >= total
-}
-
-// visibleLibraryIDs returns the libraries the current user can see: all libraries for admin and
-// headless processes, otherwise the user's granted libraries.
-func (r *artistRepository) visibleLibraryIDs() ([]int, error) {
-	user := loggedUser(r.ctx)
-	if user.IsAdmin || user.ID == invalidUserId {
-		var ids []int
-		err := r.queryAllSlice(Select("id").From("library"), &ids)
-		return ids, err
-	}
-	return slice.Map(user.Libraries, func(lib model.Library) int { return lib.ID }), nil
 }
 
 func (r *artistRepository) Count(options ...rest.QueryOptions) (int64, error) {

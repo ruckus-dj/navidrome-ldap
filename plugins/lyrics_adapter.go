@@ -14,6 +14,10 @@ const (
 	FuncLyricsGetLyrics = "nd_lyrics_get_lyrics"
 )
 
+// maxConcurrentLyricsCalls caps in-flight lyrics calls per plugin: clients prefetch
+// lyrics for whole queues, and the resulting burst can rate-limit upstream providers.
+const maxConcurrentLyricsCalls = 2
+
 func init() {
 	registerCapability(
 		CapabilityLyrics,
@@ -34,6 +38,12 @@ type LyricsPlugin struct {
 // GetLyrics calls the plugin to fetch lyrics, then content-sniffs each response
 // via model.ParseLyrics (TTML/SRT/YAML/LRC/plain).
 func (l *LyricsPlugin) GetLyrics(ctx context.Context, mf *model.MediaFile) (model.LyricList, error) {
+	select {
+	case l.plugin.lyricsSem <- struct{}{}:
+		defer func() { <-l.plugin.lyricsSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	req := capabilities.GetLyricsRequest{
 		Track: mediaFileToTrackInfo(l.plugin, mf),
 	}
@@ -44,15 +54,19 @@ func (l *LyricsPlugin) GetLyrics(ctx context.Context, mf *model.MediaFile) (mode
 		return nil, err
 	}
 
+	// The lyric text comes from the plugin, not the media file's own tags, so
+	// attribute logs to both the plugin and the track it was fetched for.
+	ctx = log.NewContext(ctx, "plugin", l.name, "file", mf.Path)
+
 	var result model.LyricList
 	for _, lt := range resp.Lyrics {
 		lang := lt.Lang
 		if lang == "" {
 			lang = "xxx"
 		}
-		parsed, err := model.ParseLyrics("", lang, []byte(lt.Text))
+		parsed, err := model.ParseLyrics(ctx, "", lang, []byte(lt.Text))
 		if err != nil {
-			log.Warn(ctx, "Error parsing plugin lyrics", "plugin", l.name, err)
+			log.Warn(ctx, "Error parsing plugin lyrics", err)
 			continue
 		}
 		for _, lyric := range parsed {

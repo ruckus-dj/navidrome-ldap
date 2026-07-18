@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"iter"
 	"maps"
@@ -17,6 +18,7 @@ import (
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/utils/slice"
+	"github.com/navidrome/navidrome/utils/str"
 	"github.com/pocketbase/dbx"
 )
 
@@ -30,6 +32,10 @@ type dbAlbum struct {
 	Participants string `structs:"-" json:"-"`
 	Tags         string `structs:"-" json:"-"`
 	FolderIDs    string `structs:"-" json:"-"`
+	// dbx maps columns to fields by name; RGAlbumGain doesn't convert to
+	// rg_album_gain, so shim fields carry the read and PostScan copies them over.
+	RgAlbumGain *float64 `structs:"-" json:"-"`
+	RgAlbumPeak *float64 `structs:"-" json:"-"`
 }
 
 func (a *dbAlbum) PostScan() error {
@@ -57,6 +63,8 @@ func (a *dbAlbum) PostScan() error {
 		}
 		a.Album.FolderIDs = ids
 	}
+	a.Album.RGAlbumGain = a.RgAlbumGain
+	a.Album.RGAlbumPeak = a.RgAlbumPeak
 	return nil
 }
 
@@ -69,7 +77,7 @@ func (a *dbAlbum) PostMapArgs(args map[string]any) error {
 	fullText = append(fullText, a.Album.Tags[model.TagCatalogNumber]...)
 	args["full_text"] = formatFullText(fullText...)
 	args["search_participants"] = strings.Join(participantNames, " ")
-	args["search_normalized"] = normalizeForFTS(a.Name, a.AlbumArtist)
+	args["search_normalized"] = str.NormalizeForFTS(a.Name, a.AlbumArtist)
 
 	args["tags"] = marshalTags(a.Album.Tags)
 	args["participants"] = marshalParticipants(a.Album.Participants)
@@ -143,9 +151,9 @@ var albumFilters = sync.OnceValue(func() map[string]filterFunc {
 
 func recentlyAddedSort() string {
 	if conf.Server.RecentlyAddedByModTime {
-		return "datetime(album.updated_at)"
+		return "album.updated_at, album.id"
 	}
-	return "datetime(album.created_at)"
+	return "album.created_at, album.id"
 }
 
 func recentlyPlayedFilter(string, any) Sqlizer {
@@ -186,8 +194,10 @@ func allRolesFilter(_ string, value any) Sqlizer {
 
 func (r *albumRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	query := r.newSelect()
-	query = r.withAnnotation(query, "album.id")
 	query = r.applyLibraryFilter(query)
+	if filtersNeedAnnotation(r.applyFilters(query, options...)) {
+		query = r.withAnnotation(query, "album.id")
+	}
 	return r.count(query, options...)
 }
 
@@ -242,6 +252,29 @@ func (r *albumRepository) GetAll(options ...model.QueryOptions) (model.Albums, e
 		return nil, err
 	}
 	return res.toModels(), nil
+}
+
+func (r *albumRepository) GetCursor(options ...model.QueryOptions) (model.AlbumCursor, error) {
+	sq := r.selectAlbum(options...)
+	cursor, err := queryWithStableResults[dbAlbum](r.sqlRepository, sq)
+	if err != nil {
+		return nil, err
+	}
+	return wrapAlbumCursor(cursor), nil
+}
+
+func (r *albumRepository) GetYears(libraryIDs ...int) ([]int, error) {
+	cond := And{Gt{"max_year": 0}, Eq{"missing": false}}
+	if len(libraryIDs) > 0 {
+		cond = append(cond, Eq{"library_id": libraryIDs})
+	}
+	sq := r.applyLibraryFilter(Select("distinct max_year").From("album").Where(cond).OrderBy("max_year"))
+	years := []int{}
+	err := r.queryAllSlice(sq, &years)
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
+		return nil, err
+	}
+	return years, nil
 }
 
 func (r *albumRepository) CopyAttributes(fromID, toID string, columns ...string) error {
@@ -316,17 +349,7 @@ func (r *albumRepository) GetTouchedAlbums(libID int) (model.AlbumCursor, error)
 }
 
 func wrapAlbumCursor(cursor iter.Seq2[dbAlbum, error]) model.AlbumCursor {
-	return func(yield func(model.Album, error) bool) {
-		for a, err := range cursor {
-			if a.Album == nil {
-				yield(model.Album{}, fmt.Errorf("unexpected nil album (%v): %w", a, err))
-				return
-			}
-			if !yield(*a.Album, err) || err != nil {
-				return
-			}
-		}
-	}
+	return model.AlbumCursor(wrapCursor(cursor, func(a dbAlbum) *model.Album { return a.Album }))
 }
 
 // RefreshPlayCounts updates the play count and last play date annotations for all albums, based

@@ -3,6 +3,7 @@ package persistence
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Masterminds/squirrel"
@@ -67,6 +68,22 @@ var _ = Describe("AlbumRepository", func() {
 		})
 	})
 
+	Describe("GetCursor", func() {
+		It("yields the same albums as GetAll", func() {
+			opts := model.QueryOptions{Sort: "name"}
+			want, err := albumRepo.GetAll(opts)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(collectCursor(albumRepo.GetCursor(opts))).To(Equal([]model.Album(want)))
+		})
+
+		It("honors Max/Offset like GetAll", func() {
+			opts := model.QueryOptions{Sort: "name", Max: 2, Offset: 1}
+			want, err := albumRepo.GetAll(opts)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(collectCursor(albumRepo.GetCursor(opts))).To(Equal([]model.Album(want)))
+		})
+	})
+
 	Describe("GetAll", func() {
 		var GetAll = func(opts ...model.QueryOptions) (model.Albums, error) {
 			albums, err := albumRepo.GetAll(opts...)
@@ -112,49 +129,66 @@ var _ = Describe("AlbumRepository", func() {
 	})
 
 	Describe("recently_added sort", func() {
-		It("sorts correctly regardless of timestamp format (T-format vs space-format)", func() {
-			// Both timestamps share the same date prefix "2024-01-15" so the T vs space
-			// character at position 10 determines sort order in raw string comparison.
-			// Without normalization, 'T' (ASCII 84) > ' ' (ASCII 32) makes the older
-			// T-format timestamp sort AFTER the newer space-format one.
+		AfterEach(func() {
+			_, _ = albumRepo.executeSQL(squirrel.Delete("album").
+				Where(squirrel.Like{"id": "ra-%"}))
+		})
 
-			// Older album: morning of Jan 15, stored in T-format
-			olderAlbum := &model.Album{LibraryID: 1, ID: "ts-older", Name: "Older Album"}
-			Expect(albumRepo.Put(olderAlbum)).To(Succeed())
+		// Sub-second precision must survive, and ties must break deterministically
+		// so the order is independent of any filter (issue #5673).
+		indexOf := func(albums model.Albums, id string) int {
+			for i, a := range albums {
+				if a.ID == id {
+					return i
+				}
+			}
+			return -1
+		}
+
+		It("orders by sub-second precision, not truncated to the second", func() {
+			// Same second, different nanoseconds: datetime() would tie these.
+			earlier := &model.Album{LibraryID: 1, ID: "ra-earlier", Name: "Earlier"}
+			later := &model.Album{LibraryID: 1, ID: "ra-later", Name: "Later"}
+			Expect(albumRepo.Put(earlier)).To(Succeed())
+			Expect(albumRepo.Put(later)).To(Succeed())
 			_, err := albumRepo.executeSQL(squirrel.Update("album").
-				Set("created_at", "2024-01-15T08:00:00Z").
-				Where(squirrel.Eq{"id": "ts-older"}))
+				Set("created_at", "2024-01-15 10:00:00.100000000+00:00").
+				Where(squirrel.Eq{"id": "ra-earlier"}))
 			Expect(err).ToNot(HaveOccurred())
-
-			// Newer album: evening of Jan 15, stored in space-format
-			newerAlbum := &model.Album{LibraryID: 1, ID: "ts-newer", Name: "Newer Album"}
-			Expect(albumRepo.Put(newerAlbum)).To(Succeed())
 			_, err = albumRepo.executeSQL(squirrel.Update("album").
-				Set("created_at", "2024-01-15 20:00:00+00:00").
-				Where(squirrel.Eq{"id": "ts-newer"}))
+				Set("created_at", "2024-01-15 10:00:00.900000000+00:00").
+				Where(squirrel.Eq{"id": "ra-later"}))
 			Expect(err).ToNot(HaveOccurred())
 
 			albums, err := albumRepo.GetAll(model.QueryOptions{Sort: "recently_added", Order: "desc"})
 			Expect(err).ToNot(HaveOccurred())
+			Expect(indexOf(albums, "ra-later")).To(BeNumerically("<", indexOf(albums, "ra-earlier")),
+				".900 should sort before .100 in desc order")
+		})
 
-			// Find positions of our test albums
-			olderIdx, newerIdx := -1, -1
-			for i, a := range albums {
-				switch a.ID {
-				case "ts-older":
-					olderIdx = i
-				case "ts-newer":
-					newerIdx = i
-				}
+		It("breaks ties deterministically and consistently across filters", func() {
+			// All sharing one created_at: the relative order of any subset must
+			// match the unfiltered order (the inversion mechanism in #5673).
+			ids := []string{"ra-t1", "ra-t2", "ra-t3", "ra-t4"}
+			for _, aid := range ids {
+				Expect(albumRepo.Put(&model.Album{LibraryID: 1, ID: aid, Name: aid})).To(Succeed())
 			}
-			Expect(olderIdx).To(BeNumerically(">=", 0), "older album not found in results")
-			Expect(newerIdx).To(BeNumerically(">=", 0), "newer album not found in results")
-			// Newer album (evening, space-format) should come before older album (morning, T-format) in desc order
-			Expect(newerIdx).To(BeNumerically("<", olderIdx),
-				"Newer album (20:00 space-format) should sort before older album (08:00 T-format) in desc order")
+			_, err := albumRepo.executeSQL(squirrel.Update("album").
+				Set("created_at", "2024-02-20 12:00:00+00:00").
+				Where(squirrel.Eq{"id": ids}))
+			Expect(err).ToNot(HaveOccurred())
 
-			// Clean up
-			_, _ = albumRepo.executeSQL(squirrel.Delete("album").Where(squirrel.Eq{"id": []string{"ts-older", "ts-newer"}}))
+			all, err := albumRepo.GetAll(model.QueryOptions{Sort: "recently_added", Order: "desc"})
+			Expect(err).ToNot(HaveOccurred())
+
+			subset, err := albumRepo.GetAll(model.QueryOptions{
+				Sort: "recently_added", Order: "desc",
+				Filters: squirrel.Eq{"album.id": []string{"ra-t1", "ra-t3"}}})
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(indexOf(all, "ra-t1") < indexOf(all, "ra-t3")).
+				To(Equal(indexOf(subset, "ra-t1") < indexOf(subset, "ra-t3")),
+					"tied albums must keep the same relative order with and without a filter")
 		})
 	})
 
@@ -818,6 +852,65 @@ var _ = Describe("AlbumRepository", func() {
 		})
 	})
 
+	Describe("GetYears", func() {
+		It("returns distinct album years ascending, excluding zero", func() {
+			years, err := albumRepo.GetYears()
+			Expect(err).ToNot(HaveOccurred())
+			// Sorted ascending, no duplicates, no zero-year entries.
+			Expect(sort.IsSorted(sort.IntSlice(years))).To(BeTrue())
+			Expect(years).ToNot(ContainElement(0))
+			for i := 1; i < len(years); i++ {
+				Expect(years[i]).To(BeNumerically(">", years[i-1])) // strictly increasing = distinct
+			}
+		})
+
+		It("deduplicates repeated years", func() {
+			// Regression test: verify that DISTINCT is applied in the SQL.
+			// Insert two albums with the same non-zero max_year (2005).
+			album1 := &model.Album{LibraryID: 1, ID: "dedup-test-1", Name: "Album 1", MaxYear: 2005}
+			album2 := &model.Album{LibraryID: 1, ID: "dedup-test-2", Name: "Album 2", MaxYear: 2005}
+			Expect(albumRepo.Put(album1)).To(Succeed())
+			Expect(albumRepo.Put(album2)).To(Succeed())
+			DeferCleanup(func() {
+				_, _ = albumRepo.executeSQL(squirrel.Delete("album").Where(squirrel.Eq{"id": []string{"dedup-test-1", "dedup-test-2"}}))
+			})
+
+			years, err := albumRepo.GetYears()
+			Expect(err).ToNot(HaveOccurred())
+
+			// Count occurrences of 2005 in the result
+			count := 0
+			for _, y := range years {
+				if y == 2005 {
+					count++
+				}
+			}
+			Expect(count).To(Equal(1), "year 2005 should appear exactly once despite two albums having it")
+		})
+
+		It("scopes years to the given libraries", func() {
+			all, err := albumRepo.GetYears()
+			Expect(err).ToNot(HaveOccurred())
+			// A library with no albums yields no years.
+			scoped, err := albumRepo.GetYears(99999)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(scoped).To(BeEmpty())
+			Expect(all).ToNot(BeEmpty())
+		})
+
+		It("excludes years that belong only to missing albums", func() {
+			gone := &model.Album{LibraryID: 1, ID: "missing-year-1", Name: "Gone", MaxYear: 1911, Missing: true}
+			Expect(albumRepo.Put(gone)).To(Succeed())
+			DeferCleanup(func() {
+				_, _ = albumRepo.executeSQL(squirrel.Delete("album").Where(squirrel.Eq{"id": "missing-year-1"}))
+			})
+
+			years, err := albumRepo.GetYears()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(years).ToNot(ContainElement(1911))
+		})
+	})
+
 	Describe("wrapAlbumCursor", func() {
 		It("does not panic when the cursor yields a dbAlbum with nil Album", func() {
 			// Simulate what queryWithStableResults does on the rows.Err() path:
@@ -837,7 +930,7 @@ var _ = Describe("AlbumRepository", func() {
 				}
 			}).ToNot(Panic())
 			Expect(gotErr).To(HaveOccurred())
-			Expect(gotErr.Error()).To(ContainSubstring("unexpected nil album"))
+			Expect(gotErr.Error()).To(ContainSubstring("unexpected nil model.Album"))
 			Expect(errors.Is(gotErr, dbErr)).To(BeTrue(), "should wrap the original cursor error")
 		})
 
@@ -855,6 +948,33 @@ var _ = Describe("AlbumRepository", func() {
 			}
 			Expect(albums).To(HaveLen(1))
 			Expect(albums[0].ID).To(Equal("a1"))
+		})
+	})
+
+	Describe("ReplayGain", func() {
+		BeforeEach(func() {
+			DeferCleanup(func() {
+				_, _ = albumRepo.executeSQL(squirrel.Delete("album").Where(squirrel.Eq{"id": []string{"rg-1", "rg-2"}}))
+			})
+		})
+		It("round-trips album ReplayGain gain and peak", func() {
+			Expect(albumRepo.Put(&model.Album{
+				ID: "rg-1", Name: "rg", LibraryID: 1,
+				RGAlbumGain: new(-7.5), RGAlbumPeak: new(0.98),
+			})).To(Succeed())
+			got, err := albumRepo.Get("rg-1")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.RGAlbumGain).ToNot(BeNil())
+			Expect(*got.RGAlbumGain).To(Equal(-7.5))
+			Expect(got.RGAlbumPeak).ToNot(BeNil())
+			Expect(*got.RGAlbumPeak).To(Equal(0.98))
+		})
+		It("reads nil when ReplayGain is unset", func() {
+			Expect(albumRepo.Put(&model.Album{ID: "rg-2", Name: "rg2", LibraryID: 1})).To(Succeed())
+			got, err := albumRepo.Get("rg-2")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.RGAlbumGain).To(BeNil())
+			Expect(got.RGAlbumPeak).To(BeNil())
 		})
 	})
 })

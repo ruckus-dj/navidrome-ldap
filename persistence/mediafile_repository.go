@@ -16,6 +16,7 @@ import (
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/utils/slice"
+	"github.com/navidrome/navidrome/utils/str"
 	"github.com/pocketbase/dbx"
 )
 
@@ -62,7 +63,7 @@ func (m *dbMediaFile) PostMapArgs(args map[string]any) error {
 	fullText = append(fullText, participantNames...)
 	args["full_text"] = formatFullText(fullText...)
 	args["search_participants"] = strings.Join(participantNames, " ")
-	args["search_normalized"] = normalizeForFTS(m.FullTitle(), m.Album, m.Artist, m.AlbumArtist)
+	args["search_normalized"] = str.NormalizeForFTS(m.FullTitle(), m.Album, m.Artist, m.AlbumArtist)
 	args["tags"] = marshalTags(m.MediaFile.Tags)
 	args["participants"] = marshalParticipants(m.MediaFile.Participants)
 	return nil
@@ -90,6 +91,16 @@ func NewMediaFileRepository(ctx context.Context, db dbx.Builder) model.MediaFile
 		"recently_added": mediaFileRecentlyAddedSort(),
 		"starred_at":     "starred, starred_at",
 		"rated_at":       "rating, rated_at",
+		"year":           "year",
+		"genre":          "genre",
+		"duration":       "duration",
+		"channels":       "channels",
+		"bpm":            "bpm",
+		"path":           "path",
+		"comment":        "comment",
+		"play_count":     "play_count",
+		"play_date":      "play_date",
+		"rating":         "rating",
 	})
 	return r
 }
@@ -117,15 +128,18 @@ var mediaFileFilter = sync.OnceValue(func() map[string]filterFunc {
 
 func mediaFileRecentlyAddedSort() string {
 	if conf.Server.RecentlyAddedByModTime {
-		return "media_file.updated_at"
+		return "media_file.updated_at, media_file.id"
 	}
-	return "media_file.created_at"
+	return "media_file.created_at, media_file.id"
 }
 
 func (r *mediaFileRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	query := r.newSelect()
-	query = r.withAnnotation(query, "media_file.id")
 	query = r.applyLibraryFilter(query)
+	// The annotation join is expensive with count(distinct) and pointless unless a filter uses it.
+	if filtersNeedAnnotation(r.applyFilters(query, options...)) {
+		query = r.withAnnotation(query, "media_file.id")
+	}
 	return r.count(query, options...)
 }
 
@@ -406,17 +420,7 @@ func (r *mediaFileRepository) GetMissingAndMatching(libId int) (model.MediaFileC
 }
 
 func wrapMediaFileCursor(cursor iter.Seq2[dbMediaFile, error]) model.MediaFileCursor {
-	return func(yield func(model.MediaFile, error) bool) {
-		for m, err := range cursor {
-			if m.MediaFile == nil {
-				yield(model.MediaFile{}, fmt.Errorf("unexpected nil mediafile (%v): %w", m, err))
-				return
-			}
-			if !yield(*m.MediaFile, err) || err != nil {
-				return
-			}
-		}
-	}
+	return model.MediaFileCursor(wrapCursor(cursor, func(m dbMediaFile) *model.MediaFile { return m.MediaFile }))
 }
 
 // FindRecentFilesByMBZTrackID finds recently added files by MusicBrainz Track ID in other libraries

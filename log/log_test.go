@@ -135,18 +135,32 @@ var _ = Describe("Logger", func() {
 	})
 
 	Describe("LogLevels", func() {
-		It("logs at specific levels", func() {
-			SetLevel(LevelError)
-			Debug("message 1")
+		BeforeEach(func() {
+			SetLevel(LevelFatal)
+			SetLogLevels(nil)
+		})
+
+		DescribeTable("logs at specific levels", func(logger func(...any), level Level) {
+			logger("message 1")
 			Expect(hook.LastEntry()).To(BeNil())
 
-			SetLogLevels(map[string]string{
-				"log/log_test": "debug",
-			})
+			Log(level, "message 1.5")
+			Expect(hook.LastEntry()).To(BeNil())
 
-			Debug("message 2")
+			SetLogLevels(map[string]string{"log/log_test": "trace"})
+
+			logger("message 2")
 			Expect(hook.LastEntry().Message).To(Equal("message 2"))
-		})
+
+			Log(level, "message 2.5")
+			Expect(hook.LastEntry().Message).To(Equal("message 2.5"))
+		},
+			Entry("Error", Error, LevelError),
+			Entry("Warn", Warn, LevelWarn),
+			Entry("Info", Info, LevelInfo),
+			Entry("Debug", Debug, LevelDebug),
+			Entry("Trace", Trace, LevelTrace),
+		)
 	})
 
 	Describe("IsGreaterOrEqualTo", func() {
@@ -244,6 +258,11 @@ var _ = Describe("Logger", func() {
 		Describe("Subsonic API password", func() {
 			msg := "getLyrics.view?v=1.2.0&c=iSub&u=user_name&p=first%20and%20other%20words&title=Title"
 			Expect(Redact(msg)).To(Equal("getLyrics.view?v=1.2.0&c=iSub&u=user_name&p=[REDACTED]&title=Title"))
+		})
+
+		It("redacts a whole JWT in api_key, not just up to its first dot", func() {
+			msg := "/jellyfin/Audio/abc/universal?static=true&api_key=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.c2ln-X_1&other=1"
+			Expect(Redact(msg)).To(Equal("/jellyfin/Audio/abc/universal?static=true&api_key=[REDACTED]&other=1"))
 		})
 	})
 })

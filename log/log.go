@@ -45,8 +45,10 @@ var redacted = &Hook{
 		"([^\\w]p=)[^&]+",
 		"([^\\w]jwt=)[^&]+",
 
-		// External services query params
-		"([^\\w]api_key=)[\\w]+",
+		// External services query params. Values can be JWTs (dots, dashes), so match everything up
+		// to the next query separator or whitespace, not just word chars. A [\w]+ class would stop
+		// at a JWT's first '.' and leak its payload and signature.
+		"([^\\w]api_key=)[^&\\s]+",
 	},
 }
 
@@ -175,10 +177,14 @@ func NewContext(ctx context.Context, keyValuePairs ...any) context.Context {
 	return ctx
 }
 
-func SetDefaultLogger(l *logrus.Logger) {
+// SetDefaultLogger swaps the process-wide logger and returns the previous one,
+// so tests can restore the original (with its hooks and formatter) on cleanup.
+func SetDefaultLogger(l *logrus.Logger) *logrus.Logger {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()
+	prev := defaultLogger
 	defaultLogger = l
+	return prev
 }
 
 func CurrentLevel() Level {
@@ -193,34 +199,39 @@ func IsGreaterOrEqualTo(level Level) bool {
 }
 
 func Fatal(args ...any) {
-	Log(LevelFatal, args...)
+	log(LevelFatal, args...)
 	os.Exit(1)
 }
 
 func Error(args ...any) {
-	Log(LevelError, args...)
+	log(LevelError, args...)
 }
 
 func Warn(args ...any) {
-	Log(LevelWarn, args...)
+	log(LevelWarn, args...)
 }
 
 func Info(args ...any) {
-	Log(LevelInfo, args...)
+	log(LevelInfo, args...)
 }
 
 func Debug(args ...any) {
-	Log(LevelDebug, args...)
+	log(LevelDebug, args...)
 }
 
 func Trace(args ...any) {
-	Log(LevelTrace, args...)
+	log(LevelTrace, args...)
 }
 
 func Log(level Level, args ...any) {
+	log(level, args...)
+}
+
+func log(level Level, args ...any) {
 	if !shouldLog(level, 3) {
 		return
 	}
+
 	logger, msg := parseArgs(args)
 	logger.Log(logrus.Level(level), msg)
 }

@@ -51,6 +51,7 @@ type configOptions struct {
 	EnableExternalServices          bool
 	EnableM3UExternalAlbumArt       bool
 	EnableInsightsCollector         bool
+	EnableScheduledDBAnalyze        bool
 	EnableMediaFileCoverArt         bool
 	TranscodingCacheSize            string
 	ImageCacheSize                  string
@@ -117,6 +118,7 @@ type configOptions struct {
 	LastFM                          lastfmOptions       `json:",omitzero"`
 	Deezer                          deezerOptions       `json:",omitzero"`
 	ListenBrainz                    listenBrainzOptions `json:",omitzero"`
+	Jellyfin                        jellyfinOptions     `json:",omitzero"`
 	EnableScrobbleHistory           bool
 	Tags                            map[string]TagConf `json:",omitempty"`
 	Agents                          string
@@ -148,23 +150,23 @@ type configOptions struct {
 	DevEnablePluginsInsights          bool
 	DevPluginCompilationTimeout       time.Duration
 	DevExternalArtistFetchMultiplier  float64
-	DevOptimizeDB                     bool
 	DevPreserveUnicodeInExternalCalls bool
 	DevEnableMediaFileProbe           bool
 }
 
 type scannerOptions struct {
-	Enabled            bool
-	Schedule           string
-	WatcherWait        time.Duration
-	ScanOnStartup      bool
-	Extractor          string
-	ArtistJoiner       string
-	GenreSeparators    string // Deprecated: Use Tags.genre.Split instead
-	GroupAlbumReleases bool   // Deprecated: Use PID.Album instead
-	FollowSymlinks     bool   // Whether to follow symlinks when scanning directories
-	IgnoreDotFolders   bool   // Whether to ignore folders whose name starts with a dot when scanning
-	PurgeMissing       string // Values: "never", "always", "full"
+	Enabled               bool
+	Schedule              string
+	WatcherWait           time.Duration
+	ScanOnStartup         bool
+	Extractor             string
+	ArtistJoiner          string
+	ArtistSplitExceptions []string // Artist names never split by tag separators
+	GenreSeparators       string   // Deprecated: Use Tags.genre.Split instead
+	GroupAlbumReleases    bool     // Deprecated: Use PID.Album instead
+	FollowSymlinks        bool     // Whether to follow symlinks when scanning directories
+	IgnoreDotFolders      bool     // Whether to ignore folders whose name starts with a dot when scanning
+	PurgeMissing          string   // Values: "never", "always", "full"
 }
 
 type transcodingOptions struct {
@@ -255,6 +257,18 @@ type listenBrainzOptions struct {
 	BaseURL         string
 	ArtistAlgorithm string
 	TrackAlgorithm  string
+}
+
+type jellyfinOptions struct {
+	Enabled    bool
+	ServerName string
+	// ExposedPublicUsers is a comma-separated list of usernames to advertise on the unauthenticated
+	// GET /Users/Public, so Jellyfin clients can show a login user-picker. Empty exposes no users.
+	ExposedPublicUsers string
+	// MaxConcurrentStreams bounds how many collection responses can stream at once. Each holds a DB
+	// cursor — and its pooled connection — for the whole client-paced response, so without a bound
+	// enough slow clients would take the entire pool and stall the scanner, scrobbles and the UI.
+	MaxConcurrentStreams int
 }
 
 type httpHeaderOptions struct {
@@ -858,12 +872,13 @@ func setViperDefaults() {
 	viper.SetDefault("uiplaybackreportinterval", consts.DefaultUIPlaybackReportInterval)
 	viper.SetDefault("enableartworkupload", true)
 	viper.SetDefault("maximageuploadsize", consts.DefaultMaxImageUploadSize)
-	viper.SetDefault("enablesharing", false)
+	viper.SetDefault("enablesharing", true)
 	viper.SetDefault("shareurl", "")
 	viper.SetDefault("defaultshareexpiration", 8760*time.Hour)
 	viper.SetDefault("defaultdownloadableshare", false)
 	viper.SetDefault("gatrackingid", "")
 	viper.SetDefault("enableinsightscollector", true)
+	viper.SetDefault("enablescheduleddbanalyze", true)
 	viper.SetDefault("enablelogredacting", true)
 	viper.SetDefault("authrequestlimit", 5)
 	viper.SetDefault("authwindowlength", 20*time.Second)
@@ -884,6 +899,7 @@ func setViperDefaults() {
 	viper.SetDefault("scanner.watcherwait", consts.DefaultWatcherWait)
 	viper.SetDefault("scanner.scanonstartup", true)
 	viper.SetDefault("scanner.artistjoiner", consts.ArtistJoiner)
+	viper.SetDefault("scanner.artistsplitexceptions", []string{})
 	viper.SetDefault("scanner.genreseparators", "")
 	viper.SetDefault("scanner.groupalbumreleases", false)
 	viper.SetDefault("scanner.followsymlinks", true)
@@ -918,6 +934,8 @@ func setViperDefaults() {
 	viper.SetDefault("ldap.searchfilter", "(&(objectClass=inetOrgPerson)(uid=%s))")
 	viper.SetDefault("ldap.mail", "mail")
 	viper.SetDefault("ldap.name", "cn")
+	viper.SetDefault("jellyfin.enabled", false)
+	viper.SetDefault("jellyfin.servername", "")
 	viper.SetDefault("enablescrobblehistory", true)
 	viper.SetDefault("httpheaders.frameoptions", "DENY")
 	viper.SetDefault("backup.path", "")
@@ -947,6 +965,9 @@ func setViperDefaults() {
 	viper.SetDefault("devuishowconfig", true)
 	viper.SetDefault("devneweventstream", true)
 	viper.SetDefault("devoffsetoptimize", 50000)
+	// Half the pool: streams may take up to this many connections, leaving the rest for the scanner,
+	// scrobbles and the UI. See MaxOpenConns.
+	viper.SetDefault("jellyfin.maxconcurrentstreams", max(2, MaxOpenConns()/2))
 	viper.SetDefault("devartworkmaxrequests", max(2, runtime.NumCPU()/2))
 	viper.SetDefault("devartworkthrottlebackloglimit", consts.RequestThrottleBacklogLimit)
 	viper.SetDefault("devartworkthrottlebacklogtimeout", consts.RequestThrottleBacklogTimeout)
@@ -961,7 +982,6 @@ func setViperDefaults() {
 	viper.SetDefault("devenablepluginsinsights", true)
 	viper.SetDefault("devplugincompilationtimeout", time.Minute)
 	viper.SetDefault("devexternalartistfetchmultiplier", 1.5)
-	viper.SetDefault("devoptimizedb", true)
 	viper.SetDefault("devpreserveunicodeinexternalcalls", false)
 	viper.SetDefault("devenablemediafileprobe", true)
 }
@@ -1017,4 +1037,15 @@ func getConfigFile(cfgFile string) string {
 		}
 	}
 	return ""
+}
+
+// MaxOpenConns is the size of the shared SQLite connection pool, used by every subsystem (scanner,
+// Subsonic, Jellyfin, native API, UI).
+//
+// It bounds concurrent *readers*: SQLite serializes writers on a single database-wide write lock, so
+// more connections buy no write parallelism. A connection is held while blocked on disk I/O or on a
+// slow HTTP client, neither of which is CPU-bound — the CPU-bound knob is DevScannerThreads — so the
+// count is only loosely related to core count, and the floor is what matters on small machines.
+func MaxOpenConns() int {
+	return max(4, runtime.NumCPU())
 }

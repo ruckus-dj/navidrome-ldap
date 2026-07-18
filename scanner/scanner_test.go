@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing/fstest"
+	"time"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
@@ -186,6 +187,43 @@ var _ = Describe("Scanner", Ordered, func() {
 				Expect(albums[0].Participants.First(model.RoleProducer).Name).To(Equal("George Martin"))
 				Expect(albums[0].SongCount).To(Equal(3))
 			})
+		})
+	})
+
+	Context("Artist with atomic non-ASCII letters, 'GØGGS'", func() {
+		BeforeEach(func() {
+			goggs := template(_t{"albumartist": "GØGGS", "album": "Pre Strike Sweep", "year": 2018})
+			createFS(fstest.MapFS{
+				"GØGGS/Pre Strike Sweep/01 - Falling For You.mp3": goggs(track(1, "Falling For You")),
+			})
+		})
+
+		searchNormalized := func() string {
+			var sn string
+			Expect(db.Db().QueryRowContext(ctx,
+				"SELECT search_normalized FROM artist WHERE name = 'GØGGS'").Scan(&sn)).To(Succeed())
+			return sn
+		}
+
+		It("repopulates a stale search_normalized on a full rescan", func() {
+			Expect(runScanner(ctx, true)).To(Succeed())
+			Expect(searchNormalized()).To(Equal("GOGGS"))
+
+			// Simulate the stale value left by the FTS5 migration's SQL back-fill
+			_, err := db.Db().ExecContext(ctx, "UPDATE artist SET search_normalized = '' WHERE name = 'GØGGS'")
+			Expect(err).ToNot(HaveOccurred())
+
+			// Backdate the folder so the next full scan reliably sees it as outdated.
+			// isOutdated() compares folder.updated_at (written by this scan) against the
+			// next scan's last_scan_started_at with a strict Before(); back-to-back scans
+			// can capture both within one clock tick on Windows (coarse wall-clock), making
+			// the refresh flaky. Backdating forces the comparison to be unambiguous.
+			_, err = db.Db().ExecContext(ctx,
+				"UPDATE folder SET updated_at = ?", time.Now().Add(-time.Hour))
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(runScanner(ctx, true)).To(Succeed())
+			Expect(searchNormalized()).To(Equal("GOGGS"))
 		})
 	})
 

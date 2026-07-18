@@ -29,6 +29,22 @@ var _ = Describe("MediaRepository", func() {
 		mr = NewMediaFileRepository(ctx, GetDBXBuilder())
 	})
 
+	Describe("GetCursor", func() {
+		It("yields the same media files as GetAll", func() {
+			opts := model.QueryOptions{Sort: "title"}
+			want, err := mr.GetAll(opts)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(collectCursor(mr.GetCursor(opts))).To(Equal([]model.MediaFile(want)))
+		})
+
+		It("honors Max/Offset like GetAll", func() {
+			opts := model.QueryOptions{Sort: "title", Max: 2, Offset: 1}
+			want, err := mr.GetAll(opts)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(collectCursor(mr.GetCursor(opts))).To(Equal([]model.MediaFile(want)))
+		})
+	})
+
 	It("gets mediafile from the DB", func() {
 		actual, err := mr.Get("1004")
 		Expect(err).ToNot(HaveOccurred())
@@ -43,6 +59,37 @@ var _ = Describe("MediaRepository", func() {
 
 	It("counts the number of mediafiles in the DB", func() {
 		Expect(mr.CountAll()).To(Equal(int64(13)))
+	})
+
+	Describe("CountAll annotation-join gating", func() {
+		var adminRepo model.MediaFileRepository
+
+		BeforeEach(func() {
+			adminCtx := request.WithUser(log.NewContext(context.TODO()), model.User{ID: "userid", IsAdmin: true})
+			adminRepo = NewMediaFileRepository(adminCtx, GetDBXBuilder())
+		})
+
+		It("counts starred songs when an annotation filter is present", func() {
+			// Come Together (id 1002) is starred for the admin user in the seed data
+			count, err := adminRepo.CountAll(model.QueryOptions{
+				Filters: annotationBoolFilter("starred")("starred", "true"),
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(count).To(Equal(int64(1)))
+		})
+
+		It("counts with starred=false without a 'no such column' error (join kept)", func() {
+			count, err := adminRepo.CountAll(model.QueryOptions{
+				Filters: annotationBoolFilter("starred")("starred", "false"),
+			})
+			Expect(err).ToNot(HaveOccurred())
+			// All songs except the one starred one
+			Expect(count).To(Equal(int64(12)))
+		})
+
+		It("counts unfiltered with the join dropped", func() {
+			Expect(adminRepo.CountAll()).To(Equal(int64(13)))
+		})
 	})
 
 	Describe("CountBySuffix", func() {
@@ -576,6 +623,34 @@ var _ = Describe("MediaRepository", func() {
 				})
 			})
 
+			It("breaks ties deterministically when files share the same created_at", func() {
+				conf.Server.RecentlyAddedByModTime = false
+				ctx := log.NewContext(GinkgoT().Context())
+				ctx = request.WithUser(ctx, model.User{ID: "userid"})
+				repo := NewMediaFileRepository(ctx, GetDBXBuilder())
+
+				ids := []string{testMediaFiles[0].ID, testMediaFiles[1].ID, testMediaFiles[2].ID}
+				sameTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+				_, err := GetDBXBuilder().Update("media_file",
+					dbx.Params{"created_at": sameTime},
+					dbx.In("id", ids[0], ids[1], ids[2])).Execute()
+				Expect(err).ToNot(HaveOccurred())
+
+				order := func() []string {
+					res, err := repo.GetAll(model.QueryOptions{
+						Sort: "recently_added", Order: "desc",
+						Filters: squirrel.Eq{"media_file.id": ids}})
+					Expect(err).ToNot(HaveOccurred())
+					out := make([]string, len(res))
+					for i, mf := range res {
+						out[i] = mf.ID
+					}
+					return out
+				}
+				// Stable across repeated queries (no query-plan-dependent reordering).
+				Expect(order()).To(Equal(order()))
+			})
+
 		})
 	})
 
@@ -953,7 +1028,7 @@ var _ = Describe("MediaRepository", func() {
 				}
 			}).ToNot(Panic())
 			Expect(gotErr).To(HaveOccurred())
-			Expect(gotErr.Error()).To(ContainSubstring("unexpected nil mediafile"))
+			Expect(gotErr.Error()).To(ContainSubstring("unexpected nil model.MediaFile"))
 			Expect(errors.Is(gotErr, dbErr)).To(BeTrue(), "should wrap the original cursor error")
 		})
 

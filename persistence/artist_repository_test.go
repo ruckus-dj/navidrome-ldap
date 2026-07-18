@@ -268,10 +268,43 @@ var _ = Describe("ArtistRepository", func() {
 			repo = NewArtistRepository(ctx, GetDBXBuilder())
 		})
 
+		Describe("GetCursor", func() {
+			It("yields the same artists as GetAll", func() {
+				opts := model.QueryOptions{Sort: "name"}
+				want, err := repo.GetAll(opts)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(collectCursor(repo.GetCursor(opts))).To(Equal([]model.Artist(want)))
+			})
+
+			It("honors Max/Offset like GetAll", func() {
+				opts := model.QueryOptions{Sort: "name", Max: 2, Offset: 1}
+				want, err := repo.GetAll(opts)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(collectCursor(repo.GetCursor(opts))).To(Equal([]model.Artist(want)))
+			})
+		})
+
 		Describe("Basic Operations", func() {
 			Describe("Count", func() {
 				It("returns the number of artists in the DB", func() {
 					Expect(repo.CountAll()).To(Equal(int64(4)))
+				})
+
+				It("counts starred artists when an annotation filter is present", func() {
+					// The Beatles (id 3) is starred for the admin user in the seed data
+					count, err := repo.CountAll(model.QueryOptions{
+						Filters: annotationBoolFilter("starred")("starred", "true"),
+					})
+					Expect(err).ToNot(HaveOccurred())
+					Expect(count).To(Equal(int64(1)))
+				})
+
+				It("counts with has_rating=false without a 'no such column' error (join kept)", func() {
+					count, err := repo.CountAll(model.QueryOptions{
+						Filters: annotationBoolFilter("rating")("rating", "false"),
+					})
+					Expect(err).ToNot(HaveOccurred())
+					Expect(count).To(Equal(int64(4)))
 				})
 			})
 

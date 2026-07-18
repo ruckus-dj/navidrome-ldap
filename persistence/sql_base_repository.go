@@ -229,6 +229,12 @@ func (r sqlRepository) applyLibraryFilter(sq SelectBuilder, tableName ...string)
 		return sq
 	}
 
+	// A non-admin granted every library sees everything the subquery would return, so applying it is
+	// pure overhead. Skip it in that case (same fast path admins get).
+	if visible, err := r.visibleLibraryIDs(); err == nil && r.userSeesAllLibraries(visible) {
+		return sq
+	}
+
 	table := r.tableName
 	if len(tableName) > 0 {
 		table = tableName[0]
@@ -238,6 +244,32 @@ func (r sqlRepository) applyLibraryFilter(sq SelectBuilder, tableName ...string)
 	// Use subquery to filter by user's library access
 	return sq.Where(Expr(table+".library_id IN ("+
 		"SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)", user.ID))
+}
+
+// userSeesAllLibraries reports whether the visible set already covers every library, so a
+// library filter would exclude nothing.
+func (r sqlRepository) userSeesAllLibraries(visible []int) bool {
+	user := loggedUser(r.ctx)
+	if user.IsAdmin || user.ID == invalidUserId {
+		return true // visible is the whole library table
+	}
+	total, err := NewLibraryRepository(r.ctx, r.db).CountAll()
+	if err != nil || total == 0 {
+		return false
+	}
+	return int64(len(visible)) == total
+}
+
+// visibleLibraryIDs returns the libraries the current user can see: all libraries for admin and
+// headless processes, otherwise the user's granted libraries.
+func (r sqlRepository) visibleLibraryIDs() ([]int, error) {
+	user := loggedUser(r.ctx)
+	if user.IsAdmin || user.ID == invalidUserId {
+		var ids []int
+		err := r.queryAllSlice(Select("id").From("library"), &ids)
+		return ids, err
+	}
+	return slice.Map(user.Libraries, func(lib model.Library) int { return lib.ID }), nil
 }
 
 func (r sqlRepository) seedKey() string {
@@ -313,6 +345,24 @@ func (r sqlRepository) queryOne(sq Sqlizer, response any) error {
 	}
 	r.logSQL(query, args, err, 1, start)
 	return err
+}
+
+// wrapCursor adapts a cursor over db rows into one over their models. toModel pulls out the row's
+// embedded model, which a type parameter can't reach on its own.
+func wrapCursor[D, T any](cursor iter.Seq2[D, error], toModel func(D) *T) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		for row, err := range cursor {
+			m := toModel(row)
+			if m == nil {
+				var zero T
+				yield(zero, fmt.Errorf("unexpected nil %T (%v): %w", zero, row, err))
+				return
+			}
+			if !yield(*m, err) || err != nil {
+				return
+			}
+		}
+	}
 }
 
 // queryWithStableResults is a helper function to execute a query and return an iterator that will yield its results
