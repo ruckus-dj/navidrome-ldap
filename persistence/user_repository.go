@@ -264,6 +264,15 @@ func (r *userRepository) Save(entity any) (string, error) {
 		return "", rest.ErrPermissionDenied
 	}
 	u := entity.(*model.User)
+	if u.ID != "" {
+		existing, err := r.Get(u.ID)
+		if err == nil && existing.IsLDAP() {
+			return "", rest.ErrPermissionDenied
+		}
+		if err != nil && !errors.Is(err, model.ErrNotFound) {
+			return "", err
+		}
+	}
 	if err := validateUsernameUnique(r, u); err != nil {
 		return "", err
 	}

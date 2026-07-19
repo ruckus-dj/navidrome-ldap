@@ -196,6 +196,78 @@ var _ = Describe("UserRepository", func() {
 		})
 	})
 
+	Describe("Save protects LDAP users", func() {
+		var adminRepo model.UserRepository
+
+		BeforeEach(func() {
+			adminCtx := request.WithUser(log.NewContext(GinkgoT().Context()), adminUser)
+			adminRepo = NewUserRepository(adminCtx, GetDBXBuilder())
+		})
+
+		It("rejects an admin POST that reuses an LDAP user ID", func() {
+			ldapUser := &model.User{
+				ID:       "ldap-save-1",
+				UserName: "ldap-save-user",
+				Name:     "LDAP Save",
+				Email:    "directory@example.com",
+				AuthType: model.AuthTypeLDAP,
+			}
+			Expect(adminRepo.Put(ldapUser)).To(Succeed())
+
+			_, err := adminRepo.(rest.Persistable).Save(&model.User{
+				ID:       ldapUser.ID,
+				UserName: ldapUser.UserName,
+				Name:     ldapUser.Name,
+				Email:    "forged@example.com",
+			})
+			Expect(err).To(MatchError(rest.ErrPermissionDenied))
+
+			got, err := adminRepo.Get(ldapUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Email).To(Equal("directory@example.com"))
+		})
+
+		It("allows an admin POST to update a local user", func() {
+			localUser := &model.User{
+				ID:       "local-save-1",
+				UserName: "local-save-user",
+				Name:     "Local Save",
+				Email:    "before@example.com",
+			}
+			Expect(adminRepo.Put(localUser)).To(Succeed())
+
+			_, err := adminRepo.(rest.Persistable).Save(&model.User{
+				ID:       localUser.ID,
+				UserName: localUser.UserName,
+				Name:     localUser.Name,
+				Email:    "after@example.com",
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			got, err := adminRepo.Get(localUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Email).To(Equal("after@example.com"))
+		})
+
+		It("allows LDAP login sync to update the directory email", func() {
+			ldapUser := &model.User{
+				ID:       "ldap-sync-1",
+				UserName: "ldap-sync-user",
+				Name:     "LDAP Sync",
+				Email:    "before@example.com",
+				AuthType: model.AuthTypeLDAP,
+			}
+			Expect(adminRepo.Put(ldapUser)).To(Succeed())
+
+			ldapUser.Email = "directory@example.com"
+			Expect(adminRepo.Put(ldapUser)).To(Succeed())
+
+			got, err := adminRepo.Get(ldapUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Email).To(Equal("directory@example.com"))
+		})
+	})
+
 	Describe("ClearPassword", func() {
 		It("scrubs the persisted password", func() {
 			u := &model.User{ID: "clr-1", UserName: "clr-user", Name: "Clr", NewPassword: "to-be-cleared"}
