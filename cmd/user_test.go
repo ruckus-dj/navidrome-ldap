@@ -16,6 +16,15 @@ var _ = Describe("applyUserEmailChange", func() {
 		Expect(user.Email).To(Equal("directory@example.com"))
 	})
 
+	It("rejects LDAP email removal without mutating the user", func() {
+		user := &model.User{Email: "directory@example.com", AuthType: model.AuthTypeLDAP}
+
+		err := applyUserEmailChange(user, "", true)
+
+		Expect(err).To(MatchError("LDAP user email is managed by the directory"))
+		Expect(user.Email).To(Equal("directory@example.com"))
+	})
+
 	It("allows a local email change", func() {
 		user := &model.User{Email: "before@example.com"}
 
