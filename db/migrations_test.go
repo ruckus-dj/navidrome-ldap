@@ -94,4 +94,60 @@ func TestApplyMigrationsAppliesMissingVersions(t *testing.T) {
 			t.Fatalf("known LDAP migration %q was not applied: %v", table, err)
 		}
 	}
+
+	restartUnexpectedMigration := filepath.Join(migrationsDir, "20260501000000_restart_backfill.sql")
+	if err := os.WriteFile(restartUnexpectedMigration, []byte("-- +goose Up\nCREATE TABLE restart_backfill (id INTEGER);\n-- +goose Down\nDROP TABLE restart_backfill;\n"), 0o600); err != nil {
+		t.Fatalf("write restart migration: %v", err)
+	}
+	err = applyMigrations(context.Background(), database, "migrations")
+	if err == nil {
+		t.Fatal("apply restart migration: expected an error")
+	}
+	if !strings.Contains(err.Error(), "20260501000000") {
+		t.Fatalf("apply restart migration: %v", err)
+	}
+	var name string
+	err = database.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'restart_backfill'").Scan(&name)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("restart migration ran before rejection: %v", err)
+	}
+}
+
+func TestApplyMigrationsBackfillsLDAPSchema(t *testing.T) {
+	database, err := sql.Open(Dialect, "file:ldap-bridge-actual?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	goose.SetBaseFS(os.DirFS("."))
+	if err := goose.SetDialect(Dialect); err != nil {
+		t.Fatalf("set goose dialect: %v", err)
+	}
+	if err := goose.UpContext(context.Background(), database, "migrations"); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
+	if _, err := database.Exec(`DROP TABLE user_app_password`); err != nil {
+		t.Fatalf("drop app-password table: %v", err)
+	}
+	if _, err := database.Exec(`DROP INDEX idx_user_auth_type`); err != nil {
+		t.Fatalf("drop auth-type index: %v", err)
+	}
+	if _, err := database.Exec(`ALTER TABLE user DROP COLUMN auth_type`); err != nil {
+		t.Fatalf("drop auth-type column: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM goose_db_version WHERE version_id IN (?, ?)`, ldapAppPasswordMigrationVersion, ldapAuthTypeMigrationVersion); err != nil {
+		t.Fatalf("remove LDAP migration records: %v", err)
+	}
+
+	if err := applyMigrations(context.Background(), database, "migrations"); err != nil {
+		t.Fatalf("backfill LDAP schema: %v", err)
+	}
+	var name string
+	if err := database.QueryRow("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_app_password'").Scan(&name); err != nil {
+		t.Fatalf("query app-password table: %v", err)
+	}
+	if err := database.QueryRow("SELECT auth_type FROM user LIMIT 1").Scan(&name); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("query auth-type column: %v", err)
+	}
 }

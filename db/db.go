@@ -112,16 +112,8 @@ func Init(ctx context.Context) func() {
 }
 
 func applyMigrations(ctx context.Context, database *sql.DB, folder string) error {
-	currentVersion, err := goose.GetDBVersionContext(ctx, database)
-	if err != nil {
-		return fmt.Errorf("get current migration version: %w", err)
-	}
-	if currentVersion == 0 {
-		return goose.UpContext(ctx, database, folder)
-	}
-	migrations, err := goose.CollectMigrations(folder, 0, currentVersion)
-	if err != nil {
-		return fmt.Errorf("collect migrations: %w", err)
+	if _, err := goose.EnsureDBVersionContext(ctx, database); err != nil {
+		return fmt.Errorf("ensure migration version table: %w", err)
 	}
 	migrationTable := goose.TableName()
 	rows, err := database.QueryContext(ctx, fmt.Sprintf(`
@@ -135,15 +127,26 @@ WHERE is_applied = true
 	defer rows.Close()
 
 	applied := make(map[int64]bool)
+	var currentVersion int64
 	for rows.Next() {
 		var version int64
 		if err := rows.Scan(&version); err != nil {
 			return fmt.Errorf("scan applied migration: %w", err)
 		}
 		applied[version] = true
+		if version > currentVersion {
+			currentVersion = version
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate applied migrations: %w", err)
+	}
+	if currentVersion == 0 {
+		return goose.UpContext(ctx, database, folder)
+	}
+	migrations, err := goose.CollectMigrations(folder, 0, currentVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
 	}
 
 	var unexpected []int64
