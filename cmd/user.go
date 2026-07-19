@@ -317,12 +317,16 @@ func runUserEdit(ctx context.Context) {
 			}
 		}
 
-		if email != "" && email != user.Email {
-			user.Email = email
-			changes = append(changes, "updated email")
-		} else if removeEmail && user.Email != "" {
-			user.Email = ""
-			changes = append(changes, "removed email")
+		previousEmail := user.Email
+		if err := applyUserEmailChange(user, email, removeEmail); err != nil {
+			return err
+		}
+		if user.Email != previousEmail {
+			if user.Email == "" {
+				changes = append(changes, "removed email")
+			} else {
+				changes = append(changes, "updated email")
+			}
 		}
 
 		if name != "" && name != user.Name {
@@ -366,6 +370,21 @@ func runUserEdit(ctx context.Context) {
 	} else {
 		log.Info(ctx, "Updated user", "user", user.UserName, "changes", strings.Join(changes, ", "))
 	}
+}
+
+func applyUserEmailChange(user *model.User, newEmail string, remove bool) error {
+	if newEmail == "" && !remove {
+		return nil
+	}
+	if user.IsLDAP() && ((newEmail != "" && newEmail != user.Email) || (remove && user.Email != "")) {
+		return errors.New("LDAP user email is managed by the directory")
+	}
+	if newEmail != "" {
+		user.Email = newEmail
+	} else if remove {
+		user.Email = ""
+	}
+	return nil
 }
 
 type displayLibrary struct {
