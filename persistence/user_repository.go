@@ -24,7 +24,6 @@ import (
 
 type userRepository struct {
 	sqlRepository
-	beforeProtectedWrite func()
 }
 
 type userWriteMode uint8
@@ -302,7 +301,6 @@ func (r *userRepository) Save(entity any) (string, error) {
 	if err := validateUsernameUnique(r, u); err != nil {
 		return "", err
 	}
-	r.waitBeforeProtectedWrite()
 	err := r.writeUser(u, userWriteRejectLDAP)
 	if err != nil {
 		return "", err
@@ -353,18 +351,11 @@ func (r *userRepository) Update(id string, entity any, _ ...string) error {
 	if err := validateUsernameUnique(r, u); err != nil {
 		return err
 	}
-	r.waitBeforeProtectedWrite()
 	err = r.writeUser(u, userWritePreserveLDAP)
 	if errors.Is(err, model.ErrNotFound) {
 		return rest.ErrNotFound
 	}
 	return err
-}
-
-func (r *userRepository) waitBeforeProtectedWrite() {
-	if r.beforeProtectedWrite != nil {
-		r.beforeProtectedWrite()
-	}
 }
 
 func validatePasswordChange(newUser *model.User, logged *model.User) error {
