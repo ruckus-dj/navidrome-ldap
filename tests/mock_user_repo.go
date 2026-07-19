@@ -112,6 +112,18 @@ func (u *MockedUserRepo) UpdateLastAccessAt(id string) error {
 	return u.Error
 }
 
+func (u *MockedUserRepo) UpdateLDAPAdmin(id string, isAdmin bool) error {
+	usr, err := u.Get(id)
+	if err != nil {
+		return err
+	}
+	if !usr.IsLDAP() {
+		return model.ErrNotFound
+	}
+	usr.IsAdmin = isAdmin
+	return nil
+}
+
 func (u *MockedUserRepo) ClearPassword(id string) error {
 	if u.Error != nil {
 		return u.Error

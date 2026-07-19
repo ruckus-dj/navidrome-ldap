@@ -26,6 +26,10 @@ type livenessProbe func(userName string) (active bool, reason string, err error)
 // preserve the existing IsAdmin rather than demote.
 type adminProbeFn func(userName string) (isAdmin bool, err error)
 
+type ldapAdminUpdater interface {
+	UpdateLDAPAdmin(id string, isAdmin bool) error
+}
+
 // LDAPLivenessCheck reconciles every LDAP-backed user against the
 // configured directory and revokes the app passwords of users that no
 // longer match — either because they were removed from the directory or
@@ -134,8 +138,8 @@ func runLDAPLivenessCheck(ctx context.Context, ds model.DataStore, probe livenes
 			if adminErr != nil {
 				log.Warn(ctx, "LDAP liveness: admin probe failed; preserving IsAdmin", "user", u.UserName, adminErr)
 			} else if u.IsAdmin != newIsAdmin {
-				u.IsAdmin = newIsAdmin
-				if err := ds.User(ctx).Put(&u); err != nil {
+				updater := ds.User(ctx).(ldapAdminUpdater)
+				if err := updater.UpdateLDAPAdmin(u.ID, newIsAdmin); err != nil {
 					log.Error(ctx, "LDAP liveness: failed to persist IsAdmin change", "user", u.UserName, err)
 				} else {
 					adminChanged++
