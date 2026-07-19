@@ -1,6 +1,6 @@
 > [!IMPORTANT]
 > This is a soft fork of Navidrome that adds LDAP support. It is based on [this previously closed PR](https://github.com/navidrome/navidrome/pull/590).
-> Based on the thread in the original PR, it is unlikely this would be accepted upstream, but I wanted to use LLDAP with Navidrome so here we are. 
+> Based on the thread in the original PR, it is unlikely this would be accepted upstream, but I wanted to use LLDAP with Navidrome so here we are.
 
 > [!WARNING]
 > **Notice of AI/LLM usage in code.** While I am a reasonably competent Go programmer, I do not have the time nor desire to dig into this codebase deeply.
