@@ -256,6 +256,20 @@ func (r *userRepository) UpdateLastAccessAt(id string) error {
 	return err
 }
 
+func (r *userRepository) UpdateLDAPAdmin(id string, isAdmin bool) error {
+	count, err := r.executeSQL(Update(r.tableName).Where(And{
+		Eq{"id": id},
+		Eq{"auth_type": model.AuthTypeLDAP},
+	}).Set("is_admin", isAdmin))
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return model.ErrNotFound
+	}
+	return nil
+}
+
 func (r *userRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	usr := loggedUser(r.ctx)
 	if !usr.IsAdmin {
@@ -298,6 +312,9 @@ func (r *userRepository) Save(entity any) (string, error) {
 		return "", rest.ErrPermissionDenied
 	}
 	u := entity.(*model.User)
+	if u.AuthType == model.AuthTypeLDAP {
+		return "", rest.ErrPermissionDenied
+	}
 	if err := validateUsernameUnique(r, u); err != nil {
 		return "", err
 	}

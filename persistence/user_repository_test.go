@@ -230,6 +230,16 @@ var _ = Describe("UserRepository", func() {
 			Expect(got.Email).To(Equal("directory@example.com"))
 		})
 
+		It("rejects an admin POST claiming LDAP ownership", func() {
+			_, err := adminRepo.(rest.Persistable).Save(&model.User{
+				UserName: "forged-ldap-user",
+				Name:     "Forged LDAP",
+				Email:    "forged@example.com",
+				AuthType: model.AuthTypeLDAP,
+			})
+			Expect(err).To(MatchError(rest.ErrPermissionDenied))
+		})
+
 		It("allows an admin POST to update a local user", func() {
 			localUser := &model.User{
 				ID:       "local-save-1",
@@ -320,6 +330,21 @@ var _ = Describe("UserRepository", func() {
 			Expect(got.Name).To(Equal("Admin Rename"))
 			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
 			Expect(got.Email).To(Equal("directory@example.com"))
+		})
+	})
+
+	Describe("UpdateLDAPAdmin", func() {
+		It("updates only admin state for an LDAP user", func() {
+			ldapUser := &model.User{ID: "ldap-admin-1", UserName: "ldap-admin", Email: "directory@example.com", AuthType: model.AuthTypeLDAP}
+			Expect(repo.Put(ldapUser)).To(Succeed())
+
+			Expect(repo.(*userRepository).UpdateLDAPAdmin(ldapUser.ID, true)).To(Succeed())
+
+			got, err := repo.Get(ldapUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.IsAdmin).To(BeTrue())
+			Expect(got.Email).To(Equal("directory@example.com"))
+			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
 		})
 	})
 
