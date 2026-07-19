@@ -26,6 +26,14 @@ type userRepository struct {
 	sqlRepository
 }
 
+type userWriteMode uint8
+
+const (
+	userWriteDirect userWriteMode = iota
+	userWriteRejectLDAP
+	userWritePreserveLDAP
+)
+
 type dbUser struct {
 	*model.User   `structs:",flatten"`
 	LibrariesJSON string `structs:"-" json:"-"`
@@ -112,6 +120,10 @@ func (r *userRepository) GetAll(options ...model.QueryOptions) (model.Users, err
 }
 
 func (r *userRepository) Put(u *model.User) error {
+	return r.writeUser(u, userWriteDirect)
+}
+
+func (r *userRepository) writeUser(u *model.User, mode userWriteMode) error {
 	if u.ID == "" {
 		u.ID = id.NewRandom()
 	}
@@ -131,11 +143,27 @@ func (r *userRepository) Put(u *model.User) error {
 	}
 	delete(values, "current_password")
 
-	// Save/update the user
-	update := Update(r.tableName).Where(Eq{"id": u.ID}).SetMap(values)
+	update := Update(r.tableName).Where(Eq{"id": u.ID})
+	switch mode {
+	case userWriteDirect:
+		update = update.SetMap(values)
+	case userWriteRejectLDAP:
+		update = update.SetMap(values).Where(Expr("auth_type <> ?", model.AuthTypeLDAP))
+	case userWritePreserveLDAP:
+		email := values["email"]
+		delete(values, "auth_type")
+		delete(values, "email")
+		update = update.SetMap(values).
+			Set("auth_type", Expr("auth_type")).
+			Set("email", Expr("CASE WHEN auth_type = ? THEN email ELSE ? END", model.AuthTypeLDAP, email))
+	}
 	count, err := r.executeSQL(update)
 	if err != nil {
 		return err
+	}
+
+	if count == 0 && mode == userWritePreserveLDAP {
+		return model.ErrNotFound
 	}
 
 	isNewUser := count == 0
@@ -144,6 +172,12 @@ func (r *userRepository) Put(u *model.User) error {
 		insert := Insert(r.tableName).SetMap(values)
 		_, err = r.executeSQL(insert)
 		if err != nil {
+			if mode == userWriteRejectLDAP {
+				existing, getErr := r.Get(u.ID)
+				if getErr == nil && existing.IsLDAP() {
+					return rest.ErrPermissionDenied
+				}
+			}
 			return err
 		}
 	}
@@ -264,19 +298,10 @@ func (r *userRepository) Save(entity any) (string, error) {
 		return "", rest.ErrPermissionDenied
 	}
 	u := entity.(*model.User)
-	if u.ID != "" {
-		existing, err := r.Get(u.ID)
-		if err == nil && existing.IsLDAP() {
-			return "", rest.ErrPermissionDenied
-		}
-		if err != nil && !errors.Is(err, model.ErrNotFound) {
-			return "", err
-		}
-	}
 	if err := validateUsernameUnique(r, u); err != nil {
 		return "", err
 	}
-	err := r.Put(u)
+	err := r.writeUser(u, userWriteRejectLDAP)
 	if err != nil {
 		return "", err
 	}
@@ -326,7 +351,7 @@ func (r *userRepository) Update(id string, entity any, _ ...string) error {
 	if err := validateUsernameUnique(r, u); err != nil {
 		return err
 	}
-	err = r.Put(u)
+	err = r.writeUser(u, userWritePreserveLDAP)
 	if errors.Is(err, model.ErrNotFound) {
 		return rest.ErrNotFound
 	}

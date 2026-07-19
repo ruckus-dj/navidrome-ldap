@@ -266,6 +266,58 @@ var _ = Describe("UserRepository", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.Email).To(Equal("directory@example.com"))
 		})
+
+		It("rejects a stale admin Save after LDAP promotion", func() {
+			localUser := &model.User{
+				ID:       "save-promotion-1",
+				UserName: "save-promotion-user",
+				Name:     "Local Save",
+				Email:    "local@example.com",
+			}
+			Expect(adminRepo.Put(localUser)).To(Succeed())
+			staleAdminUser := *localUser
+
+			ldapSync := *localUser
+			ldapSync.AuthType = model.AuthTypeLDAP
+			ldapSync.Email = "directory@example.com"
+			Expect(adminRepo.Put(&ldapSync)).To(Succeed())
+
+			staleAdminUser.Email = "forged@example.com"
+			rawRepo := adminRepo.(*userRepository)
+			Expect(rawRepo.writeUser(&staleAdminUser, userWriteRejectLDAP)).To(MatchError(rest.ErrPermissionDenied))
+
+			got, err := adminRepo.Get(localUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
+			Expect(got.Email).To(Equal("directory@example.com"))
+		})
+
+		It("preserves current LDAP state for a stale admin Update", func() {
+			localUser := &model.User{
+				ID:       "update-promotion-1",
+				UserName: "update-promotion-user",
+				Name:     "Local Update",
+				Email:    "local@example.com",
+			}
+			Expect(adminRepo.Put(localUser)).To(Succeed())
+			staleAdminUser := *localUser
+
+			ldapSync := *localUser
+			ldapSync.AuthType = model.AuthTypeLDAP
+			ldapSync.Email = "directory@example.com"
+			Expect(adminRepo.Put(&ldapSync)).To(Succeed())
+
+			staleAdminUser.Name = "Admin Rename"
+			staleAdminUser.Email = "forged@example.com"
+			rawRepo := adminRepo.(*userRepository)
+			Expect(rawRepo.writeUser(&staleAdminUser, userWritePreserveLDAP)).To(Succeed())
+
+			got, err := adminRepo.Get(localUser.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Name).To(Equal("Admin Rename"))
+			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
+			Expect(got.Email).To(Equal("directory@example.com"))
+		})
 	})
 
 	Describe("ClearPassword", func() {
