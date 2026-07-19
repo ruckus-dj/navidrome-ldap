@@ -50,7 +50,9 @@ vi.mock('react-admin', () => ({
     hooks.save = save
     return <form data-testid="simple-form">{children}</form>
   },
-  TextInput: ({ source }) => <input data-testid={`text-input-${source}`} />,
+  TextInput: ({ source, disabled }) => (
+    <input data-testid={`text-input-${source}`} disabled={disabled} />
+  ),
   BooleanInput: ({ source }) => (
     <input type="checkbox" data-testid={`boolean-input-${source}`} />
   ),
@@ -183,6 +185,12 @@ describe('<UserEdit />', () => {
         'resources.user.message.ldapManagedAccount',
       )
     })
+
+    it('disables the email input', () => {
+      render(<UserEdit id="user1" permissions="admin" />)
+
+      expect(screen.getByTestId('text-input-email')).toBeDisabled()
+    })
   })
 
   describe('local user', () => {
@@ -199,6 +207,12 @@ describe('<UserEdit />', () => {
       expect(
         screen.getByTestId('boolean-input-changePassword'),
       ).toBeInTheDocument()
+    })
+
+    it('keeps the email input editable', () => {
+      render(<UserEdit id="user1" permissions="admin" />)
+
+      expect(screen.getByTestId('text-input-email')).not.toBeDisabled()
     })
   })
 

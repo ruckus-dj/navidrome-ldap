@@ -162,7 +162,16 @@ const UserEdit = (props) => {
             )
           }}
         </FormDataConsumer>
-        <TextInput spellCheck={false} source="email" validate={[email()]} />
+        <FormDataConsumer>
+          {({ formData }) => (
+            <TextInput
+              spellCheck={false}
+              source="email"
+              validate={[email()]}
+              disabled={formData.authType === 'ldap'}
+            />
+          )}
+        </FormDataConsumer>
         <FormDataConsumer>
           {({ formData }) =>
             formData.authType === 'ldap' ? null : (
