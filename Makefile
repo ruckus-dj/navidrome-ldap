@@ -148,6 +148,10 @@ build: check_go_env buildjs ##@Build Build the project
 	go build -ldflags="-X github.com/navidrome/navidrome/consts.gitSha=$(GIT_SHA) -X github.com/navidrome/navidrome/consts.gitTag=$(GIT_TAG)" -tags=$(GO_BUILD_TAGS)
 .PHONY: build
 
+version: ##@Build Print the version injected into a local build
+	@echo "$(GIT_TAG) ($(GIT_SHA))"
+.PHONY: version
+
 buildall: deprecated build
 .PHONY: buildall
 
