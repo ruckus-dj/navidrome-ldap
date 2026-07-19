@@ -303,6 +303,9 @@ func (r *userRepository) Update(id string, entity any, _ ...string) error {
 		return err
 	}
 	u.AuthType = existing.AuthType
+	if existing.IsLDAP() {
+		u.Email = existing.Email
+	}
 
 	// Decrypt the user's existing password before validating. This is required otherwise the existing password entered by the user will never match.
 	if err := r.decryptPassword(usr); err != nil {

@@ -112,6 +112,7 @@ var _ = Describe("UserRepository", func() {
 				ID:       "ldap-update-1",
 				UserName: "ldap-update-user",
 				Name:     "LDAP Update",
+				Email:    "directory@example.com",
 				AuthType: model.AuthTypeLDAP,
 			}
 			Expect(NewUserRepository(adminCtx, GetDBXBuilder()).Put(&ldapUsr)).To(Succeed())
@@ -136,6 +137,30 @@ var _ = Describe("UserRepository", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
 			Expect(got.Name).To(Equal("Renamed"))
+			Expect(got.Email).To(Equal("directory@example.com"))
+		})
+
+		It("admin PUT can update a local user's email", func() {
+			localUser := model.User{
+				ID:       "local-update-1",
+				UserName: "local-update-user",
+				Name:     "Local Update",
+				Email:    "before@example.com",
+			}
+			adminRepo := NewUserRepository(adminCtx, GetDBXBuilder())
+			Expect(adminRepo.Put(&localUser)).To(Succeed())
+
+			repo := adminRepo.(rest.Persistable)
+			Expect(repo.Update("local-update-1", &model.User{
+				ID:       "local-update-1",
+				UserName: "local-update-user",
+				Name:     "Local Update",
+				Email:    "after@example.com",
+			})).To(Succeed())
+
+			got, err := adminRepo.Get("local-update-1")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Email).To(Equal("after@example.com"))
 		})
 
 		It("admin PUT explicitly setting authType=local is ignored", func() {
