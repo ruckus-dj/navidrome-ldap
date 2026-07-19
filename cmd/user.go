@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/deluan/rest"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/spf13/cobra"
@@ -341,7 +342,7 @@ func runUserEdit(ctx context.Context) {
 			return nil
 		}
 
-		err := tx.User(ctx).Put(user)
+		err := tx.User(ctx).(rest.Persistable).Update(user.ID, user)
 		if err != nil {
 			return err
 		}
