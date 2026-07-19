@@ -197,10 +197,13 @@ var _ = Describe("UserRepository", func() {
 	})
 
 	Describe("Save protects LDAP users", func() {
-		var adminRepo model.UserRepository
+		var (
+			adminCtx  context.Context
+			adminRepo model.UserRepository
+		)
 
 		BeforeEach(func() {
-			adminCtx := request.WithUser(log.NewContext(GinkgoT().Context()), adminUser)
+			adminCtx = request.WithUser(log.NewContext(GinkgoT().Context()), adminUser)
 			adminRepo = NewUserRepository(adminCtx, GetDBXBuilder())
 		})
 
@@ -277,14 +280,27 @@ var _ = Describe("UserRepository", func() {
 			Expect(adminRepo.Put(localUser)).To(Succeed())
 			staleAdminUser := *localUser
 
+			staleAdminUser.Email = "forged@example.com"
+			rawRepo := adminRepo.(*userRepository)
+			writeReady := make(chan struct{})
+			resumeWrite := make(chan struct{})
+			rawRepo.beforeProtectedWrite = func() {
+				close(writeReady)
+				<-resumeWrite
+			}
+			saveDone := make(chan error, 1)
+			go func() {
+				_, err := rawRepo.Save(&staleAdminUser)
+				saveDone <- err
+			}()
+			<-writeReady
+
 			ldapSync := *localUser
 			ldapSync.AuthType = model.AuthTypeLDAP
 			ldapSync.Email = "directory@example.com"
-			Expect(adminRepo.Put(&ldapSync)).To(Succeed())
-
-			staleAdminUser.Email = "forged@example.com"
-			rawRepo := adminRepo.(*userRepository)
-			Expect(rawRepo.writeUser(&staleAdminUser, userWriteRejectLDAP)).To(MatchError(rest.ErrPermissionDenied))
+			Expect(NewUserRepository(adminCtx, GetDBXBuilder()).Put(&ldapSync)).To(Succeed())
+			close(resumeWrite)
+			Expect(<-saveDone).To(MatchError(rest.ErrPermissionDenied))
 
 			got, err := adminRepo.Get(localUser.ID)
 			Expect(err).ToNot(HaveOccurred())
@@ -302,15 +318,27 @@ var _ = Describe("UserRepository", func() {
 			Expect(adminRepo.Put(localUser)).To(Succeed())
 			staleAdminUser := *localUser
 
-			ldapSync := *localUser
-			ldapSync.AuthType = model.AuthTypeLDAP
-			ldapSync.Email = "directory@example.com"
-			Expect(adminRepo.Put(&ldapSync)).To(Succeed())
-
 			staleAdminUser.Name = "Admin Rename"
 			staleAdminUser.Email = "forged@example.com"
 			rawRepo := adminRepo.(*userRepository)
-			Expect(rawRepo.writeUser(&staleAdminUser, userWritePreserveLDAP)).To(Succeed())
+			writeReady := make(chan struct{})
+			resumeWrite := make(chan struct{})
+			rawRepo.beforeProtectedWrite = func() {
+				close(writeReady)
+				<-resumeWrite
+			}
+			updateDone := make(chan error, 1)
+			go func() {
+				updateDone <- rawRepo.Update(localUser.ID, &staleAdminUser)
+			}()
+			<-writeReady
+
+			ldapSync := *localUser
+			ldapSync.AuthType = model.AuthTypeLDAP
+			ldapSync.Email = "directory@example.com"
+			Expect(NewUserRepository(adminCtx, GetDBXBuilder()).Put(&ldapSync)).To(Succeed())
+			close(resumeWrite)
+			Expect(<-updateDone).To(Succeed())
 
 			got, err := adminRepo.Get(localUser.ID)
 			Expect(err).ToNot(HaveOccurred())
