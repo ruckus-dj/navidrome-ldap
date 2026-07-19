@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,6 +15,9 @@ import (
 )
 
 func TestApplyMigrationsAppliesMissingVersions(t *testing.T) {
+	packageDir := migrationTestPackageDir(t)
+	goose.SetBaseFS(os.DirFS(packageDir))
+	t.Cleanup(func() { goose.SetBaseFS(os.DirFS(packageDir)) })
 	migrations, err := goose.CollectMigrations("migrations", 0, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("collect registered migrations: %v", err)
@@ -48,7 +52,7 @@ func TestApplyMigrationsAppliesMissingVersions(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	goose.SetBaseFS(os.DirFS(root))
-	t.Cleanup(func() { goose.SetBaseFS(os.DirFS(".")) })
+	t.Cleanup(func() { goose.SetBaseFS(os.DirFS(packageDir)) })
 	if err := goose.SetDialect(Dialect); err != nil {
 		t.Fatalf("set goose dialect: %v", err)
 	}
@@ -114,13 +118,15 @@ func TestApplyMigrationsAppliesMissingVersions(t *testing.T) {
 }
 
 func TestApplyMigrationsBackfillsLDAPSchema(t *testing.T) {
+	packageDir := migrationTestPackageDir(t)
+	goose.SetBaseFS(os.DirFS(packageDir))
+	t.Cleanup(func() { goose.SetBaseFS(os.DirFS(packageDir)) })
 	database, err := sql.Open(Dialect, "file:ldap-bridge-actual?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
 
-	goose.SetBaseFS(os.DirFS("."))
 	if err := goose.SetDialect(Dialect); err != nil {
 		t.Fatalf("set goose dialect: %v", err)
 	}
@@ -150,4 +156,13 @@ func TestApplyMigrationsBackfillsLDAPSchema(t *testing.T) {
 	if err := database.QueryRow("SELECT auth_type FROM user LIMIT 1").Scan(&name); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("query auth-type column: %v", err)
 	}
+}
+
+func migrationTestPackageDir(t *testing.T) string {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve migration test path")
+	}
+	return filepath.Dir(testFile)
 }
