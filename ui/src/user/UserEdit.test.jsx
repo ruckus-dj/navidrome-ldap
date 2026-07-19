@@ -47,7 +47,7 @@ vi.mock('react-admin', () => ({
     </div>
   ),
   SimpleForm: ({ children, save }) => {
-    hooks.save = save
+    mocks.save = save
     return <form data-testid="simple-form">{children}</form>
   },
   TextInput: ({ source, disabled }) => (
@@ -68,10 +68,10 @@ vi.mock('react-admin', () => ({
   Typography: ({ children }) => <p>{children}</p>,
   required: () => () => null,
   email: () => () => null,
-  useMutation: () => [hooks.mutate],
-  useNotify: () => hooks.notify,
-  useRedirect: () => hooks.redirect,
-  useRefresh: () => hooks.refresh,
+  useMutation: () => [mocks.mutate],
+  useNotify: () => mocks.notify,
+  useRedirect: () => mocks.redirect,
+  useRefresh: () => mocks.refresh,
   usePermissions: () => ({ permissions: 'admin' }),
   useTranslate: () => (key) => key,
 }))
@@ -219,32 +219,32 @@ describe('<UserEdit />', () => {
   describe('save', () => {
     beforeEach(() => {
       vi.clearAllMocks()
-      hooks.save = null
+      mocks.save = null
     })
 
     it('notifies success and redirects when the update succeeds', async () => {
-      hooks.mutate.mockResolvedValue({ data: defaultUser })
+      mocks.mutate.mockResolvedValue({ data: defaultUser })
       render(<UserEdit id="user1" permissions="admin" />)
 
-      await hooks.save({ id: 'user1', name: 'New Name' })
+      await mocks.save({ id: 'user1', name: 'New Name' })
 
-      expect(hooks.notify).toHaveBeenCalledWith(
+      expect(mocks.notify).toHaveBeenCalledWith(
         'resources.user.notifications.updated',
         'info',
         { smart_count: 1 },
       )
-      expect(hooks.redirect).toHaveBeenCalledWith('/user')
+      expect(mocks.redirect).toHaveBeenCalledWith('/user')
     })
 
     it('returns field errors when the update fails validation', async () => {
       const fieldErrors = { currentPassword: 'ra.validation.required' }
-      hooks.mutate.mockRejectedValue({ body: { errors: fieldErrors } })
+      mocks.mutate.mockRejectedValue({ body: { errors: fieldErrors } })
       render(<UserEdit id="user1" permissions="admin" />)
 
-      const result = await hooks.save({ id: 'user1' })
+      const result = await mocks.save({ id: 'user1' })
 
       expect(result).toEqual(fieldErrors)
-      expect(hooks.notify).not.toHaveBeenCalledWith(
+      expect(mocks.notify).not.toHaveBeenCalledWith(
         'resources.user.notifications.updated',
         'info',
         { smart_count: 1 },
@@ -252,23 +252,23 @@ describe('<UserEdit />', () => {
     })
 
     it('notifies an error when the update fails without field errors', async () => {
-      hooks.mutate.mockRejectedValue(new Error('Forbidden'))
+      mocks.mutate.mockRejectedValue(new Error('Forbidden'))
       render(<UserEdit id="user1" permissions="admin" />)
 
-      await hooks.save({ id: 'user1' })
+      await mocks.save({ id: 'user1' })
 
-      expect(hooks.notify).toHaveBeenCalledWith('ra.page.error', 'warning')
-      expect(hooks.redirect).not.toHaveBeenCalled()
+      expect(mocks.notify).toHaveBeenCalledWith('ra.page.error', 'warning')
+      expect(mocks.redirect).not.toHaveBeenCalled()
     })
 
     it('notifies an error when the update rejects with a non-object error', async () => {
-      hooks.mutate.mockRejectedValue(undefined)
+      mocks.mutate.mockRejectedValue(undefined)
       render(<UserEdit id="user1" permissions="admin" />)
 
-      await hooks.save({ id: 'user1' })
+      await mocks.save({ id: 'user1' })
 
-      expect(hooks.notify).toHaveBeenCalledWith('ra.page.error', 'warning')
-      expect(hooks.redirect).not.toHaveBeenCalled()
+      expect(mocks.notify).toHaveBeenCalledWith('ra.page.error', 'warning')
+      expect(mocks.redirect).not.toHaveBeenCalled()
     })
   })
 })
