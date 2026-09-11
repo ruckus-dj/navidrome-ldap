@@ -490,6 +490,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [push-manifest-ghcr]
     if: always() && needs.push-manifest-ghcr.result == 'success'
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Delete unnecessary digest artifacts
         env:
