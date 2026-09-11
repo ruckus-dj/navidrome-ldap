@@ -204,8 +204,8 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		Expect(nextHandler.called).To(BeTrue())
 	})
 
-	// LDAP-backed users may not authenticate Subsonic clients with their
-	// directory password — only with an app password. (Issue #7.)
+	// Stored directory passwords must never authenticate LDAP-backed users;
+	// legacy directory-password auth requires a successful live LDAP bind.
 	When("the user is LDAP-backed", func() {
 		const ldapUser = "ldapper"
 		const ldapUserID = "uid-ldapper"
@@ -236,7 +236,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 			Expect(nextHandler.called).To(BeTrue())
 		})
 
-		It("rejects the LDAP directory password via legacy `p=` auth", func() {
+		It("rejects a stored LDAP password via legacy auth when LDAP is unavailable", func() {
 			r := newGetRequest("u="+ldapUser, "p="+ldapDirPlaintext)
 			authenticate(ds)(nextHandler).ServeHTTP(w, r)
 

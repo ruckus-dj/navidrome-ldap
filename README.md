@@ -76,20 +76,25 @@ A share of the revenue helps fund the development of Navidrome at no additional 
 
 Navidrome supports LDAP authentication, allowing you to integrate with your existing directory services. When a user logs in via LDAP, their account is automatically created in Navidrome if it doesn't exist and is marked as LDAP-backed (`auth_type='ldap'`).
 
-LDAP-backed users do **not** have their directory password persisted in Navidrome's database. The web UI authenticates each login against the directory; for Subsonic-API clients (Tempus, Feishin, etc.) the user must generate one or more **app passwords** from the user-edit page and paste those into their client. App passwords are per-device, revocable, and independent of the directory password — so you can revoke a stolen client without rotating your LDAP password, and rotating your LDAP password doesn't break working clients.
+LDAP-backed users do **not** have their directory password persisted in Navidrome's database. The web UI authenticates each login against the directory. Subsonic/OpenSubsonic clients can use either:
+
+- **LDAP password with legacy/password authentication** (`p=password` or `p=enc:HEX`). After checking app passwords first, Navidrome verifies the password through a live LDAP bind on each request, without storing it. Select legacy/password authentication in your client; no additional server setting is needed.
+- **App passwords with either legacy or salt+token authentication** (`t=MD5(password+salt)` and `s=salt`). Generate an app password from the user-edit page (Settings → App Passwords). Salt+token authentication cannot use the LDAP password because LDAP bind requires the original password. Valid app passwords are checked before LDAP, so existing clients continue working without directory binds.
+
+Use HTTPS for clients and LDAPS for the directory, and exclude the `p` parameter from application/proxy access logs. `enc:` is only hex encoding, not encryption. Legacy LDAP authentication depends on directory availability and adds LDAP traffic for every request; clients retaining an old or incorrect password can trigger directory account lockouts. App passwords are per-device, revocable, and independent of the directory password — so you can revoke a stolen app password without rotating your LDAP password, and rotating your LDAP password doesn't break clients using app passwords.
 
 ### Upgrading from earlier versions
 
 If you ran an earlier version of `navidrome-ldap` that persisted the directory password to the user table:
 
-- On their next **web login** post-upgrade, each LDAP user is migrated automatically: `auth_type` is set to `ldap` and any persisted password is cleared.
+- On their next **web login or successful legacy LDAP authentication** post-upgrade, each LDAP user is migrated automatically: `auth_type` is set to `ldap` and any persisted password is cleared.
 - Until that first login, existing Subsonic clients continue to authenticate with the persisted password (as before).
-- After migration, Subsonic clients must use an app password. Each user can generate one from their user-edit page (Settings → App Passwords).
+- After migration, Subsonic clients can use the LDAP password in legacy mode or an app password. Salt+token clients must use an app password.
 - The migration is one-way per user. Operators who want to flush all persisted passwords up front can have each user log in once, or run a database command to mark all users as LDAP and clear passwords manually.
 
 ### Liveness check
 
-When `ND_LDAP_LIVENESSSCHEDULE` is set, Navidrome runs a recurring sweep that reconciles every LDAP-backed user against the directory. If a user has been removed from the directory (or matches the optional `ND_LDAP_DISABLEDFILTER` clause), the sweep revokes all of that user's app passwords. Combined with PR #11's empty stored password, this is the lockout mechanism for LDAP-managed accounts: revoking the app passwords removes the only credential they had for the Subsonic API, and they can no longer log in to the web UI either (LDAP rejects them, and there is no local password to fall back on).
+When `ND_LDAP_LIVENESSSCHEDULE` is set, Navidrome runs a recurring sweep that reconciles every LDAP-backed user against the directory. If a user has been removed from the directory (or matches the optional `ND_LDAP_DISABLEDFILTER` clause), the sweep revokes all of that user's app passwords. Web login and legacy LDAP-password authentication independently require a successful directory bind, with no local-password fallback for LDAP-backed users. `ND_LDAP_DISABLEDFILTER` controls app-password revocation by the sweep; it does not itself deny LDAP binds. To block directory-password access too, disable the account in LDAP or exclude it through `ND_LDAP_SEARCHFILTER`.
 
 The sweep is fail-safe: if the directory is unreachable or the service-account bind fails, the run is aborted without revoking anything. Per-user search errors log a warning and skip just that user.
 

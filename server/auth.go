@@ -255,9 +255,9 @@ func validateLoginLDAP(userRepo model.UserRepository, userName, password string)
 
 	// User authenticated. Sync the directory-sourced attributes to the
 	// local DB but DO NOT persist the directory password. LDAP-backed users
-	// authenticate against the directory on every web login; for the
-	// Subsonic API they must use an app password (which is independent and
-	// revocable).
+	// authenticate against the directory on every web login and legacy
+	// Subsonic password request. App passwords remain an independent,
+	// revocable alternative and are required for Subsonic salt+token auth.
 	u, err := userRepo.FindByUsername(userName)
 	if errors.Is(err, model.ErrNotFound) {
 		u = &model.User{UserName: userName}

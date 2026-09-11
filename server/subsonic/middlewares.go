@@ -140,12 +140,10 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 				// FreeIPA password policy) would otherwise lock the user's
 				// directory account on every legitimate app-password request.
 				//
-				// We also use this lookup to enforce the LDAP-no-direct-password
-				// policy: an LDAP-backed user MUST authenticate with an app
-				// password — their directory password is no longer accepted at
-				// /rest, even via legacy `p=` or salt+token, since it would
-				// otherwise still be checkable via the LDAP bind in
-				// `ValidateLogin` and persist the directory password problem.
+				// LDAP users can also submit their directory password via legacy
+				// `p=` auth: ValidateLogin below checks it with a live LDAP bind
+				// without persisting it. Salt+token auth still requires an app
+				// password because LDAP bind needs the original password.
 				if jwt == "" && (pass != "" || token != "") {
 					lookupUsr, appID, ok := matchAppPassword(ctx, ds, username, pass, token, salt)
 					if ok {
@@ -156,8 +154,8 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
-					if lookupUsr != nil && lookupUsr.IsLDAP() {
-						log.Warn(ctx, "API: Rejecting non-app-password Subsonic auth for LDAP user", "username", username, "remoteAddr", r.RemoteAddr)
+					if lookupUsr != nil && lookupUsr.IsLDAP() && pass == "" {
+						log.Warn(ctx, "API: Rejecting non-app-password token auth for LDAP user", "username", username, "remoteAddr", r.RemoteAddr)
 						sendError(w, r, newError(responses.ErrorAuthenticationFail))
 						return
 					}
@@ -255,7 +253,7 @@ func validateCredentials(user *model.User, pass, token, salt, jwt string) error 
 //   - (user, appID, true)  on a match
 //   - (user, "",   false)  when the user exists but no app password matched
 //     (so the caller can decide whether to fall through or reject — the
-//     LDAP-user-must-use-app-password gate uses this case)
+//     LDAP token-auth gate uses this case)
 //   - (nil,  "",   false)  when the user doesn't exist or lookup failed
 //
 // `pass` MUST already be the decoded plaintext (the parent `authenticate`
