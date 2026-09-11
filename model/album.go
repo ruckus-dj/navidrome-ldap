@@ -1,7 +1,6 @@
 package model
 
 import (
-	"fmt"
 	"iter"
 	"math"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 type Album struct {
 	Annotations `structs:"-" hash:"ignore"`
+	ItemImage   `structs:"-" hash:"ignore"`
 
 	ID            string `structs:"id" json:"id"`
 	LibraryID     int    `structs:"library_id" json:"libraryId"`
@@ -77,7 +77,7 @@ func (a Album) CoverArtID() ArtworkID {
 
 func (a Album) FullName() string {
 	if conf.Server.Subsonic.AppendAlbumVersion && len(a.Tags[TagAlbumVersion]) > 0 {
-		return fmt.Sprintf("%s (%s)", a.Name, a.Tags[TagAlbumVersion][0])
+		return appendSuffix(a.Name, a.Tags[TagAlbumVersion][0])
 	}
 	return a.Name
 }
@@ -143,6 +143,9 @@ type AlbumRepository interface {
 	UpdateExternalInfo(*Album) error
 	Get(id string) (*Album, error)
 	GetAll(...QueryOptions) (Albums, error)
+	// GetSoleAlbumArtistIDsInSubtrees returns the sole album artists of the albums with folders in
+	// any of the given library-relative subtrees.
+	GetSoleAlbumArtistIDsInSubtrees(lib Library, paths ...string) ([]string, error)
 	GetCursor(...QueryOptions) (AlbumCursor, error)
 	GetYears(libraryIDs ...int) ([]int, error)
 

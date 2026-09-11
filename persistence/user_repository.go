@@ -16,7 +16,9 @@ import (
 	"github.com/navidrome/navidrome/consts"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
+	"github.com/navidrome/navidrome/model/criteria"
 	"github.com/navidrome/navidrome/model/id"
+	"github.com/navidrome/navidrome/model/request"
 	"github.com/navidrome/navidrome/utils"
 	"github.com/navidrome/navidrome/utils/slice"
 	"github.com/pocketbase/dbx"
@@ -157,16 +159,33 @@ func (r *userRepository) writeUser(u *model.User, mode userWriteMode) error {
 			Set("auth_type", Expr("auth_type")).
 			Set("email", Expr("CASE WHEN auth_type = ? THEN email ELSE ? END", model.AuthTypeLDAP, email))
 	}
-	count, err := r.executeSQL(update)
-	if err != nil {
-		return err
-	}
 
-	if count == 0 && mode == userWritePreserveLDAP {
-		return model.ErrNotFound
+	// The epoch bump rides the password UPDATE: as two statements they can interleave with a
+	// concurrent change and leave a session valid that the other change should have revoked.
+	var isNewUser bool
+	var epoch int
+	if u.NewPassword != "" {
+		var res struct{ TokenEpoch int }
+		err = r.queryOne(update.Set("token_epoch", Expr("token_epoch + 1")).
+			Suffix("RETURNING token_epoch"), &res)
+		switch {
+		case errors.Is(err, model.ErrNotFound):
+			isNewUser = true
+		case err != nil:
+			return err
+		default:
+			epoch = res.TokenEpoch
+		}
+	} else {
+		count, err := r.executeSQL(update)
+		if err != nil {
+			return err
+		}
+		if count == 0 && mode == userWritePreserveLDAP {
+			return model.ErrNotFound
+		}
+		isNewUser = count == 0
 	}
-
-	isNewUser := count == 0
 	if isNewUser {
 		values["created_at"] = time.Now()
 		insert := Insert(r.tableName).SetMap(values)
@@ -200,6 +219,12 @@ func (r *userRepository) writeUser(u *model.User, mode userWriteMode) error {
 		if _, err := r.executeSQL(sql); err != nil {
 			return fmt.Errorf("failed to assign default libraries to new user: %w", err)
 		}
+	}
+
+	// Only the caller's own token can be refreshed in-flight; an admin resetting another
+	// user must keep their own epoch.
+	if u.NewPassword != "" && !isNewUser && loggedUser(r.ctx).ID == u.ID {
+		request.SetTokenEpoch(r.ctx, epoch)
 	}
 
 	return nil
@@ -318,6 +343,9 @@ func (r *userRepository) Save(entity any) (string, error) {
 	if err := validateUsernameUnique(r, u); err != nil {
 		return "", err
 	}
+	if err := validateScrobbleFilter(u); err != nil {
+		return "", err
+	}
 	err := r.writeUser(u, userWriteRejectLDAP)
 	if err != nil {
 		return "", err
@@ -368,6 +396,9 @@ func (r *userRepository) Update(id string, entity any, _ ...string) error {
 	if err := validateUsernameUnique(r, u); err != nil {
 		return err
 	}
+	if err := validateScrobbleFilter(u); err != nil {
+		return err
+	}
 	err = r.writeUser(u, userWritePreserveLDAP)
 	if errors.Is(err, model.ErrNotFound) {
 		return rest.ErrNotFound
@@ -413,6 +444,33 @@ func validateUsernameUnique(r model.UserRepository, u *model.User) error {
 		return &rest.ValidationError{Errors: map[string]string{"userName": "ra.validation.unique"}}
 	}
 	return nil
+}
+
+func validateScrobbleFilter(u *model.User) error {
+	u.ScrobbleFilter = strings.TrimSpace(u.ScrobbleFilter)
+	if u.ScrobbleFilter == "" {
+		return nil
+	}
+	var c criteria.Criteria
+	if err := json.Unmarshal([]byte(u.ScrobbleFilter), &c); err != nil {
+		return invalidScrobbleFilter()
+	}
+	// A filter is a per-track test, so a result-set size means nothing here. Reject it
+	// rather than silently ignoring part of a rule copied from a smart playlist.
+	if c.Limit > 0 || c.LimitPercent > 0 || c.Offset > 0 || c.RefreshDelay > 0 {
+		return invalidScrobbleFilter()
+	}
+	// Building the WHERE clause is what validates field names and operators
+	if _, err := newSmartPlaylistCriteria(c).where(); err != nil {
+		return invalidScrobbleFilter()
+	}
+	return nil
+}
+
+func invalidScrobbleFilter() error {
+	return &rest.ValidationError{Errors: map[string]string{
+		"scrobbleFilter": "resources.user.validation.invalidScrobbleFilter",
+	}}
 }
 
 func (r *userRepository) Delete(id string) error {
