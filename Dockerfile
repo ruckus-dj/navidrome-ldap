@@ -86,7 +86,19 @@ EOT
 ########################################################################################################################
 ### Build Navidrome binary for standalone distribution (static glibc, cross-compiled)
 FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS base
-RUN apt-get update && apt-get install -y clang lld
+# Debian mirrors can briefly serve package indexes and archives from different
+# sync generations. Retry from fresh lists so transient hash/size mismatches do
+# not fail every platform in the build matrix.
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        if apt-get update && apt-get install -y --no-install-recommends clang lld; then \
+            break; \
+        fi; \
+        if [ "$attempt" = 3 ]; then exit 1; fi; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=xx / /
 WORKDIR /workspace
 
