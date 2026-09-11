@@ -66,13 +66,13 @@ type ItemArtwork struct {
 
 // ItemArtworkInfo is the list-hydration projection (item_artwork joined with artwork).
 type ItemArtworkInfo struct {
-	ItemID        string
-	Hash          string
-	BlurHash      string
-	ThumbHash     string
-	DominantColor string
-	Width         int
-	Height        int
+	ItemID        string `structs:"item_id"`
+	Hash          string `structs:"hash"`
+	BlurHash      string `structs:"blur_hash"`
+	ThumbHash     string `structs:"thumb_hash"`
+	DominantColor string `structs:"dominant_color"`
+	Width         int    `structs:"width"`
+	Height        int    `structs:"height"`
 }
 
 // Absent reports a known-absent artwork state (resolved, no image).
