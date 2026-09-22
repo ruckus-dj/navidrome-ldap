@@ -99,7 +99,7 @@ nfpms:
       preremove: "release/linux/preremove.sh"
 
 release:
-  draft: true
+  draft: false
   mode: append
   footer: |
     **Full Changelog**: https://github.com/navidrome/navidrome/compare/{{ .PreviousTag }}...{{ .Tag }}
