@@ -98,6 +98,7 @@ func checkRequiredParameters(next http.Handler) http.Handler {
 }
 
 func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
+	limiter := newAuthLimiter(conf.Server.AuthRequestLimit, conf.Server.AuthWindowLength)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
@@ -131,6 +132,18 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 				salt, _ := p.String("s")
 				jwt, _ := p.String("jwt")
 
+				// Blocked attempts get the same response as a wrong password, so they reveal nothing.
+				limitKey := server.ClientIP(r) + "\x00" + strings.ToLower(username)
+				slot, allowed := limiter.acquire(ctx, limitKey)
+				if !allowed {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Warn(ctx, "API: Too many failed login attempts", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr)
+					sendError(w, r, newError(responses.ErrorAuthenticationFail))
+					return
+				}
+
 				// App-password fast path. When the request carries a `p` or
 				// salt+token, try matching against the user's active app
 				// passwords FIRST. This avoids hitting LDAP on every Subsonic
@@ -150,12 +163,14 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 						if touchErr := ds.AppPassword(ctx).Touch(appID); touchErr != nil {
 							log.Warn(ctx, "API: Failed to bump app password last_used_at", "id", appID, "username", username, touchErr)
 						}
+						slot.release(false)
 						ctx = request.WithUser(ctx, *lookupUsr)
 						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
 					if lookupUsr != nil && lookupUsr.IsLDAP() && pass == "" {
 						log.Warn(ctx, "API: Rejecting non-app-password token auth for LDAP user", "username", username, "remoteAddr", r.RemoteAddr)
+						slot.release(true)
 						sendError(w, r, newError(responses.ErrorAuthenticationFail))
 						return
 					}
@@ -168,24 +183,21 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 					}
 				} else {
 					usr, err = ds.User(ctx).FindByUsernameWithPassword(username)
+					if err == nil {
+						err = validateCredentials(usr, pass, token, salt, jwt)
+					}
 				}
 
-				if errors.Is(err, context.Canceled) {
+				invalidLogin := errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrInvalidAuth)
+				slot.release(invalidLogin)
+				switch {
+				case errors.Is(err, context.Canceled):
 					log.Debug(ctx, "API: Request canceled when authenticating", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
 					return
-				}
-				switch {
-				case errors.Is(err, model.ErrNotFound):
+				case invalidLogin:
 					log.Warn(ctx, "API: Invalid login", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
 				case err != nil:
 					log.Error(ctx, "API: Error authenticating username", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
-				default:
-					if pass == "" {
-						err = validateCredentials(usr, pass, token, salt, jwt)
-						if err != nil {
-							log.Warn(ctx, "API: Invalid login", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
-						}
-					}
 				}
 			}
 

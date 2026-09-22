@@ -523,6 +523,14 @@ var _ = Describe("UserRepository", func() {
 		})
 	})
 
+	Describe("Delete", func() {
+		It("returns not found for a missing user", func() {
+			adminCtx := request.WithUser(log.NewContext(GinkgoT().Context()), adminUser)
+			adminRepo := NewUserRepository(adminCtx, GetDBXBuilder()).(*userRepository)
+			Expect(adminRepo.Delete("does-not-exist")).To(MatchError(model.ErrNotFound))
+		})
+	})
+
 	Describe("ReadAll name filter", func() {
 		var adminRepo model.ResourceRepository
 
