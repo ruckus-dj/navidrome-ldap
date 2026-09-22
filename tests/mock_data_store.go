@@ -208,6 +208,8 @@ func (db *MockDataStore) User(ctx context.Context) model.UserRepository {
 }
 
 func (db *MockDataStore) AppPassword(ctx context.Context) model.AppPasswordRepository {
+	db.repoMu.Lock()
+	defer db.repoMu.Unlock()
 	if db.MockedAppPassword != nil {
 		return db.MockedAppPassword
 	}

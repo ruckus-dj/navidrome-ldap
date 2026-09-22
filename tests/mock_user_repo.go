@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/navidrome/navidrome/model"
@@ -18,6 +19,7 @@ func CreateMockUserRepo() *MockedUserRepo {
 
 type MockedUserRepo struct {
 	model.UserRepository
+	mu            sync.RWMutex
 	Error         error
 	Data          map[string]*model.User
 	UserLibraries map[string][]int // userID -> libraryIDs
@@ -43,6 +45,8 @@ func (u *MockedUserRepo) Put(usr *model.User) error {
 }
 
 func (u *MockedUserRepo) FindByUsername(username string) (*model.User, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return nil, u.Error
 	}
@@ -50,7 +54,8 @@ func (u *MockedUserRepo) FindByUsername(username string) (*model.User, error) {
 	if !ok {
 		return nil, model.ErrNotFound
 	}
-	return usr, nil
+	copy := *usr
+	return &copy, nil
 }
 
 func (u *MockedUserRepo) FindByUsernameWithPassword(username string) (*model.User, error) {
@@ -93,6 +98,8 @@ func (u *MockedUserRepo) GetAll(options ...model.QueryOptions) (model.Users, err
 }
 
 func (u *MockedUserRepo) UpdateLastLoginAt(id string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	for _, usr := range u.Data {
 		if usr.ID == id {
 			usr.LastLoginAt = new(time.Now())
