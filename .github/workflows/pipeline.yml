@@ -441,7 +441,7 @@ jobs:
 
       - name: Build and push image by digest
         id: push-image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -455,7 +455,7 @@ jobs:
             type=image,name=ghcr.io/ruckus-dj/navidrome-ldap,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push-image.outputs.digest }}"
@@ -463,7 +463,7 @@ jobs:
 
       - name: Upload digest
         uses: actions/upload-artifact@v7
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')) && env.IS_LINUX == 'true' && env.IS_ARMV5 == 'false'
         with:
           name: digests-${{ env.PLATFORM }}
           path: /tmp/digests/*
@@ -477,7 +477,7 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     needs: [build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     env:
       REGISTRY_IMAGE: ghcr.io/ruckus-dj/navidrome-ldap
     steps:

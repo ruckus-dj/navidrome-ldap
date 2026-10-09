@@ -49,3 +49,6 @@ runs:
         tags: |
           type=raw,value=latest,enable={{is_default_branch}}
           type=sha,format=long,enable={{is_default_branch}}
+          type=ref,event=tag
+        flavor: |
+          latest=false
