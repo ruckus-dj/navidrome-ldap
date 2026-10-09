@@ -111,7 +111,7 @@ func (r *appPasswordRepository) FindActiveByUser(ctx context.Context, userID str
 		return nil, err
 	}
 	for i := range res {
-			plain, err := utils.Decrypt(ctx, encKey, res[i].Password)
+		plain, err := utils.Decrypt(ctx, encKey, res[i].Password)
 		if err != nil {
 			log.Error(ctx, "Error decrypting app password", "id", res[i].ID, "userID", userID, err)
 			continue
