@@ -17,7 +17,7 @@ import (
 
 	"github.com/deluan/rest"
 	"github.com/go-chi/jwtauth/v5"
-	"github.com/go-ldap/ldap"
+	"github.com/go-ldap/ldap/v3"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/consts"
@@ -175,6 +175,12 @@ func ValidateLogin(ctx context.Context, userRepo model.UserRepository, userName,
 		return nil, nil
 	}
 	u, err := validateLoginLDAP(ctx, userRepo, userName, password)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if u != nil && err == nil {
 		return u, nil
 	}
@@ -206,23 +212,18 @@ func validateLoginLDAP(ctx context.Context, userRepo model.UserRepository, userN
 		return nil, nil
 	}
 
-	bindDN := conf.Server.LDAP.BindDN
-	bindPassword := conf.Server.LDAP.BindPassword
+	runtime := getLDAPRuntime()
+	ldapCtx, cancel := context.WithTimeout(ctx, runtime.settings.timeout)
+	defer cancel()
+	started := time.Now()
+	defer func() { log.Debug(ldapCtx, "LDAP authentication completed", "duration", time.Since(started)) }()
+	if err := runtime.acquireRequest(ldapCtx); err != nil {
+		return nil, err
+	}
+	defer runtime.releaseRequest()
+
 	mailAttr := conf.Server.LDAP.Mail
 	nameAttr := conf.Server.LDAP.Name
-
-	l, err := ldap.DialURL(conf.Server.LDAP.Host)
-	if err != nil {
-		log.Error("LDAP connection failed", "host", conf.Server.LDAP.Host, err)
-		return nil, nil
-	}
-	defer l.Close()
-
-	// Bind with the read-only service account to search for the user
-	if err := l.Bind(bindDN, bindPassword); err != nil {
-		log.Error("LDAP service-account bind failed", "bindDN", bindDN, err)
-		return nil, nil
-	}
 
 	searchRequest := ldap.NewSearchRequest(
 		conf.Server.LDAP.Base,
@@ -231,11 +232,16 @@ func validateLoginLDAP(ctx context.Context, userRepo model.UserRepository, userN
 		[]string{"dn", nameAttr, mailAttr},
 		nil,
 	)
-	sr, err := l.Search(searchRequest)
+	phase := time.Now()
+	sr, err := runtime.serviceSearch(ldapCtx, searchRequest)
 	if err != nil {
+		if ctxErr := ldapContextError(ldapCtx, err); ctxErr != nil {
+			return nil, ctxErr
+		}
 		log.Error("LDAP search failed", "user", userName, err)
 		return nil, nil
 	}
+	log.Debug(ctx, "LDAP user search completed", "duration", time.Since(phase))
 	if len(sr.Entries) != 1 {
 		log.Warn("LDAP search returned unexpected number of entries", "user", userName, "matches", len(sr.Entries))
 		return nil, nil
@@ -243,65 +249,114 @@ func validateLoginLDAP(ctx context.Context, userRepo model.UserRepository, userN
 
 	entry := sr.Entries[0]
 
-	// Admin-group check (if configured). Run BEFORE the user-bind, while
-	// the connection is still authenticated as the service account —
-	// l.Bind below will replace that with the user's bind, which on many
-	// directories cannot read group memberships. The result is only
-	// applied after the user-bind succeeds.
-	var adminCheckResult *bool
-	if adminCheckEnabled() {
-		isAdmin, adminErr := ldapAdminCheck(l, userName)
-		if adminErr != nil {
-			// Transient lookup failure — preserve the existing IsAdmin
-			// to avoid locking the operator out from a directory hiccup.
-			log.Warn("LDAP admin lookup failed; preserving existing IsAdmin", "user", userName, adminErr)
-		} else {
-			adminCheckResult = &isAdmin
+	// Group membership queries may only be readable by the service account.
+	// Search has completed; run the independent service-account query in
+	// parallel with a fresh user connection so neither credential can leak
+	// into the other's connection.
+	var adminCheck func(context.Context) ldapAdminResult
+	if !adminCheckEnabled() {
+		adminCheck = nil
+	} else {
+		adminCheck = func(searchCtx context.Context) ldapAdminResult {
+			adminStarted := time.Now()
+			isAdmin, searchErr := ldapAdminLookup(searchCtx, runtime, userName, entry.DN)
+			log.Debug(searchCtx, "LDAP admin search completed", "duration", time.Since(adminStarted))
+			if searchErr != nil {
+				if ctxErr := ldapContextError(searchCtx, searchErr); ctxErr != nil {
+					return ldapAdminResult{err: ctxErr}
+				}
+				log.Warn(searchCtx, "LDAP admin lookup failed; preserving existing IsAdmin", "user", userName, searchErr)
+				return ldapAdminResult{}
+			}
+			return ldapAdminResult{isAdmin: isAdmin, authoritative: true}
 		}
 	}
 
-	// Re-bind as the user to verify their password
-	if err := l.Bind(entry.DN, password); err != nil {
-		log.Warn("LDAP user authentication failed", "user", userName, err)
+	phase = time.Now()
+	adminCheckResult, userBindErr := verifyLDAPUserAndAdmin(ldapCtx, func() error {
+		userConn, dialErr := dialLDAP(ldapCtx, runtime.settings.host)
+		if dialErr != nil {
+			return dialErr
+		}
+		defer userConn.abort()
+		return bindLDAPUser(ldapCtx, userConn, entry.DN, password)
+	}, adminCheck)
+	log.Debug(ldapCtx, "LDAP user bind and admin check completed", "duration", time.Since(phase))
+	if userBindErr != nil {
+		if ctxErr := ldapContextError(ldapCtx, userBindErr); ctxErr != nil {
+			return nil, ctxErr
+		}
+		log.Error("LDAP user connection or bind failed", "user", userName, userBindErr)
+		log.Warn("LDAP user authentication failed", "user", userName, userBindErr)
 		return nil, nil
 	}
+	if ctxErr := ldapContextError(ldapCtx, nil); ctxErr != nil {
+		return nil, ctxErr
+	}
 
-	// User authenticated. Sync the directory-sourced attributes to the
-	// local DB but DO NOT persist the directory password. LDAP-backed users
-	// authenticate against the directory on every web login and legacy
-	// Subsonic password request. App passwords remain an independent,
-	// revocable alternative and are required for Subsonic salt+token auth.
+	return syncLDAPLoginRecord(ldapCtx, userRepo, userName, entry, nameAttr, mailAttr, adminCheckResult)
+}
+
+func ldapAdminLookup(ctx context.Context, runtime *ldapRuntime, userName, authenticatedDN string) (bool, error) {
+	request := ldap.NewSearchRequest(conf.Server.LDAP.Base, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false, buildAdminFilter(userName), []string{"dn"}, nil)
+	result, err := runtime.serviceSearch(ctx, request)
+	if err != nil {
+		return false, err
+	}
+	return ldapAdminResultForDN(result, authenticatedDN)
+}
+
+func syncLDAPLoginRecord(ctx context.Context, userRepo model.UserRepository, userName string, entry *ldap.Entry, nameAttr, mailAttr string, adminCheckResult *bool) (*model.User, error) {
+	if ctxErr := ldapContextError(ctx, nil); ctxErr != nil {
+		return nil, ctxErr
+	}
 	u, err := userRepo.FindByUsername(ctx, userName)
 	if errors.Is(err, model.ErrNotFound) {
 		u = &model.User{UserName: userName}
 	} else if err != nil {
-		log.Error("Could not look up LDAP user in DB", "user", userName, err)
+		if ctxErr := ldapContextError(ctx, err); ctxErr != nil {
+			return nil, ctxErr
+		}
+		log.Error(ctx, "Could not look up LDAP user in DB", "user", userName, err)
 		return nil, nil
 	}
-	u.Name = entry.GetAttributeValue(nameAttr)
-	u.Email = entry.GetAttributeValue(mailAttr)
-	u.AuthType = model.AuthTypeLDAP
+	newName, newEmail := entry.GetAttributeValue(nameAttr), entry.GetAttributeValue(mailAttr)
+	changed := u.Name != newName || u.Email != newEmail || u.AuthType != model.AuthTypeLDAP
+	u.Name, u.Email, u.AuthType = newName, newEmail, model.AuthTypeLDAP
+	oldAdmin := u.IsAdmin
 	applyLDAPAdminResult(u, adminCheckResult)
-	if err := userRepo.Put(ctx, u); err != nil {
-		log.Error("Could not save LDAP user", "user", userName, err)
+	changed = changed || oldAdmin != u.IsAdmin
+	if u.ID == "" {
+		err = userRepo.Put(ctx, u)
+	} else if changed || u.IsAdmin {
+		err = userRepo.SyncLDAPLogin(ctx, u, adminCheckResult != nil)
+	}
+	if err != nil {
+		if ctxErr := ldapContextError(ctx, err); ctxErr != nil {
+			return nil, ctxErr
+		}
+		log.Error(ctx, "Could not save LDAP user", "user", userName, err)
 		return nil, nil
 	}
-	// Clear any password that may have been persisted by a previous version
-	// of this code (or by the user being promoted from local → LDAP). This
-	// is the migration path for existing LDAP users post-upgrade: their
-	// first login here scrubs the old reversibly-encrypted directory
-	// password from the DB.
-	if err := userRepo.ClearPassword(ctx, u.ID); err != nil {
-		log.Error("Could not clear persisted password for LDAP user", "user", userName, err)
+	if u.Password != "" {
+		if err := userRepo.ClearPassword(ctx, u.ID); err != nil {
+			if ctxErr := ldapContextError(ctx, err); ctxErr != nil {
+				return nil, ctxErr
+			}
+			log.Error(ctx, "Could not clear persisted password for LDAP user", "user", userName, err)
+			return nil, nil
+		}
 	}
-	// Mirror the DB scrub in memory so callers (notably buildAuthPayload's
-	// subsonicToken hash) don't compute over a stale ciphertext loaded by
-	// FindByUsername above.
 	u.Password = ""
 	if err := userRepo.UpdateLastLoginAt(ctx, u.ID); err != nil {
-		log.Error("Could not update LastLoginAt", "user", userName, err)
+		if ctxErr := ldapContextError(ctx, err); ctxErr != nil {
+			return nil, ctxErr
+		}
+		log.Error(ctx, "Could not update LastLoginAt", "user", userName, err)
 	}
-
+	if ctxErr := ldapContextError(ctx, nil); ctxErr != nil {
+		return nil, ctxErr
+	}
 	return u, nil
 }
 

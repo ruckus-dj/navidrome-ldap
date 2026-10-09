@@ -7,11 +7,12 @@ import (
 	"net"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-ldap/ldap"
+	"github.com/go-ldap/ldap/v3"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/model/request"
@@ -29,9 +30,18 @@ func servePasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 	}
 	var binds atomic.Int32
 	done := make(chan struct{})
+	var mu sync.Mutex
+	active := make(map[net.Conn]struct{})
+	var handlers sync.WaitGroup
 	t.Cleanup(func() {
 		_ = listener.Close()
 		<-done
+		mu.Lock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+		handlers.Wait()
 	})
 	go func() {
 		defer close(done)
@@ -40,7 +50,17 @@ func servePasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 			if err != nil {
 				return
 			}
-			func() {
+			mu.Lock()
+			active[conn] = struct{}{}
+			handlers.Add(1)
+			mu.Unlock()
+			go func(conn net.Conn) {
+				defer handlers.Done()
+				defer func() {
+					mu.Lock()
+					delete(active, conn)
+					mu.Unlock()
+				}()
 				defer conn.Close()
 				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 				write := func(id int64, op *ber.Packet) {
@@ -84,7 +104,7 @@ func servePasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 						return
 					}
 				}
-			}()
+			}(conn)
 		}
 	}()
 	return "ldap://" + listener.Addr().String(), &binds
@@ -113,9 +133,9 @@ func TestLDAPLegacyPasswordAuth(t *testing.T) {
 		newUser  bool
 	}{
 		{"directory password", []string{"p=directory-secret"}, true, 2, false},
-		{"encoded directory password", []string{fmt.Sprintf("p=enc:%x", []byte("directory-secret"))}, true, 2, false},
-		{"first directory login", []string{"p=directory-secret"}, true, 2, true},
-		{"wrong directory password", []string{"p=wrong"}, false, 2, false},
+		{"encoded directory password", []string{fmt.Sprintf("p=enc:%x", []byte("directory-secret"))}, true, 1, false},
+		{"first directory login", []string{"p=directory-secret"}, true, 1, true},
+		{"wrong directory password", []string{"p=wrong"}, false, 1, false},
 		{"empty password", []string{"p="}, false, 0, false},
 		{"empty encoded password", []string{"p=enc:"}, false, 0, false},
 		{"directory token", []string{token("directory-secret"), "s=salt"}, false, 0, false},

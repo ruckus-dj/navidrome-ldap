@@ -150,6 +150,28 @@ func (u *MockedUserRepo) UpdateLDAPAdmin(ctx context.Context, id string, isAdmin
 	return model.ErrNotFound
 }
 
+func (u *MockedUserRepo) SyncLDAPLogin(_ context.Context, synced *model.User, updateAdmin bool) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.Error != nil {
+		return u.Error
+	}
+	for _, usr := range u.Data {
+		if usr.ID != synced.ID {
+			continue
+		}
+		usr.Name = synced.Name
+		usr.Email = synced.Email
+		usr.AuthType = model.AuthTypeLDAP
+		if updateAdmin {
+			usr.IsAdmin = synced.IsAdmin
+		}
+		usr.UpdatedAt = time.Now()
+		return nil
+	}
+	return model.ErrNotFound
+}
+
 func (u *MockedUserRepo) ClearPassword(_ context.Context, id string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()

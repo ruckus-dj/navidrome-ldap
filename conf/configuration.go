@@ -204,6 +204,18 @@ type ldapOptions struct {
 	SearchFilter string
 	Mail         string
 	Name         string
+	// PoolSize bounds reusable service-account connections. User binds always
+	// use a separate, one-request connection.
+	PoolSize int
+	// MaxConcurrent bounds LDAP authentication requests, including user binds.
+	MaxConcurrent int
+	// Timeout bounds each LDAP authentication request.
+	Timeout time.Duration
+	// IdleTimeout bounds how long an unused service connection stays open.
+	IdleTimeout time.Duration
+	// MaxLifetime bounds the lifetime of a pooled service connection. Leased
+	// connections are retired when returned, never closed while in use.
+	MaxLifetime time.Duration
 
 	// LivenessSchedule, when non-empty, schedules a background sweep that
 	// reconciles each LDAP-backed user against the directory and revokes

@@ -294,6 +294,39 @@ func (r *userRepository) UpdateLDAPAdmin(ctx context.Context, id string, isAdmin
 	return nil
 }
 
+// SyncLDAPLogin writes only directory-managed columns. Login has a previously
+// loaded user snapshot; writing that whole snapshot could clobber settings
+// changed concurrently by another request.
+func (r *userRepository) SyncLDAPLogin(ctx context.Context, u *model.User, updateAdmin bool) error {
+	values := map[string]any{
+		"name":       u.Name,
+		"email":      u.Email,
+		"auth_type":  model.AuthTypeLDAP,
+		"updated_at": time.Now(),
+	}
+	if updateAdmin {
+		values["is_admin"] = u.IsAdmin
+	}
+	count, err := r.executeSQL(ctx, Update(r.tableName).Where(Eq{"id": u.ID}).SetMap(values))
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return model.ErrNotFound
+	}
+	// Match Put's admin-library reconciliation without overwriting any other
+	// user columns from the stale login snapshot.
+	if u.IsAdmin {
+		if _, err := r.executeSQL(ctx, Expr(
+			"INSERT OR IGNORE INTO user_library (user_id, library_id) SELECT ?, library.id FROM library WHERE EXISTS (SELECT 1 FROM user WHERE user.id = ? AND user.is_admin = true)",
+			u.ID, u.ID,
+		)); err != nil {
+			return fmt.Errorf("failed to assign all libraries to admin user: %w", err)
+		}
+	}
+	return nil
+}
+
 func (r *userRepository) Count(ctx context.Context, options ...rest.QueryOptions) (int64, error) {
 	usr := loggedUser(ctx)
 	if !usr.IsAdmin {

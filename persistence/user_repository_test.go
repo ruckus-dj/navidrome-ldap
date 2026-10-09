@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/deluan/rest"
@@ -116,6 +117,46 @@ var _ = Describe("UserRepository", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
 			Expect(got.IsLDAP()).To(BeTrue())
+		})
+
+		It("updates only LDAP-owned columns and preserves newer user settings", func() {
+			lastAccess := time.Date(2025, 2, 3, 4, 5, 6, 0, time.UTC)
+			seed := &model.User{
+				ID: "ldap-sync-safe", UserName: "ldap-sync-safe", Name: "Old Name", Email: "old@example.com",
+				NewPassword: "local-password", ScrobbleFilter: `{"all":[]}`, LastAccessAt: &lastAccess,
+			}
+			Expect(repo.Put(ctx, seed)).To(Succeed())
+			userRepo := repo.(*userRepository)
+			_, err := userRepo.executeSQL(ctx, squirrel.Update("user").Where(squirrel.Eq{"id": seed.ID}).Set("token_epoch", 41))
+			Expect(err).ToNot(HaveOccurred())
+
+			staleAccess := time.Time{}
+			stale := &model.User{
+				ID: seed.ID, Name: "Directory Name", Email: "directory@example.com", IsAdmin: true,
+				ScrobbleFilter: `{"any":[]}`, LastAccessAt: &staleAccess,
+			}
+			Expect(repo.SyncLDAPLogin(ctx, stale, true)).To(Succeed())
+
+			got, err := repo.Get(ctx, seed.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Name).To(Equal("Directory Name"))
+			Expect(got.Email).To(Equal("directory@example.com"))
+			Expect(got.AuthType).To(Equal(model.AuthTypeLDAP))
+			Expect(got.IsAdmin).To(BeTrue())
+			Expect(got.ScrobbleFilter).To(Equal(seed.ScrobbleFilter))
+			Expect(got.LastAccessAt).ToNot(BeNil())
+			Expect(got.LastAccessAt.UTC()).To(Equal(lastAccess))
+			var epoch struct{ TokenEpoch int }
+			Expect(userRepo.queryOne(ctx, squirrel.Select("token_epoch").From("user").Where(squirrel.Eq{"id": seed.ID}), &epoch)).To(Succeed())
+			Expect(epoch.TokenEpoch).To(Equal(41))
+
+			withPassword, err := repo.FindByUsernameWithPassword(ctx, seed.UserName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(withPassword.Password).To(Equal("local-password"))
+
+			canceledCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			Expect(repo.SyncLDAPLogin(canceledCtx, stale, true)).To(MatchError(context.Canceled))
 		})
 	})
 

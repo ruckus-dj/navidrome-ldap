@@ -8,8 +8,9 @@ import (
 )
 
 // AuthType values for User.AuthType. Drives password-storage and
-// /rest-auth policy: LDAP-backed users do not have a persisted password
-// and may only authenticate to the Subsonic API via app passwords.
+// /rest-auth policy: LDAP-backed users do not have a persisted directory
+// password. Subsonic password requests are verified against LDAP; salt+token
+// authentication uses independently revocable app passwords.
 const (
 	AuthTypeLocal = "local"
 	AuthTypeLDAP  = "ldap"
@@ -56,8 +57,7 @@ func (u User) HasLibraryAccess(libraryID int) bool {
 }
 
 // IsLDAP reports whether the user is authenticated against the configured
-// LDAP directory. LDAP-backed users have no persisted password and must use
-// app passwords for the Subsonic API.
+// LDAP directory. LDAP-backed users have no persisted directory password.
 func (u User) IsLDAP() bool {
 	return u.AuthType == AuthTypeLDAP
 }
@@ -83,6 +83,9 @@ type UserRepository interface {
 	// not remain reversibly-encrypted in the DB.
 	ClearPassword(ctx context.Context, id string) error
 	UpdateLDAPAdmin(ctx context.Context, id string, isAdmin bool) error
+	// SyncLDAPLogin updates only attributes sourced from LDAP, preserving user
+	// preferences and other independently-updated fields from concurrent writes.
+	SyncLDAPLogin(ctx context.Context, u *User, updateAdmin bool) error
 
 	// Library association methods
 	GetUserLibraries(ctx context.Context, userID string) (Libraries, error)

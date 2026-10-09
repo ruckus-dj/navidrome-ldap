@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/go-ldap/ldap"
+	"github.com/go-ldap/ldap/v3"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/core/auth"
 	"github.com/navidrome/navidrome/server/jellyfin/dto"
@@ -63,9 +64,18 @@ func serveJellyfinPasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 
 	var binds atomic.Int32
 	done := make(chan struct{})
+	var mu sync.Mutex
+	active := make(map[net.Conn]struct{})
+	var handlers sync.WaitGroup
 	t.Cleanup(func() {
 		require.NoError(t, listener.Close())
 		<-done
+		mu.Lock()
+		for conn := range active {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+		handlers.Wait()
 	})
 	go func() {
 		defer close(done)
@@ -74,7 +84,17 @@ func serveJellyfinPasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 			if acceptErr != nil {
 				return
 			}
-			func() {
+			mu.Lock()
+			active[conn] = struct{}{}
+			handlers.Add(1)
+			mu.Unlock()
+			go func(conn net.Conn) {
+				defer handlers.Done()
+				defer func() {
+					mu.Lock()
+					delete(active, conn)
+					mu.Unlock()
+				}()
 				defer conn.Close()
 				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 				write := func(id int64, op *ber.Packet) {
@@ -117,7 +137,7 @@ func serveJellyfinPasswordLDAP(t *testing.T) (string, *atomic.Int32) {
 						return
 					}
 				}
-			}()
+			}(conn)
 		}
 	}()
 	return "ldap://" + listener.Addr().String(), &binds

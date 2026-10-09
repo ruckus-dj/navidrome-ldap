@@ -124,7 +124,7 @@ You can configure LDAP using the following environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `ND_LDAP_HOST` | The LDAP server URL | `ldap://localhost:389` |
+| `ND_LDAP_HOST` | The LDAP server URL. `ldap://` and certificate-validated `ldaps://` are supported (including IPv6 literals); `ldapi://` is not supported. | `ldap://localhost:389` |
 | `ND_LDAP_BINDDN` | The DN used to bind for searching users | `cn=admin,dc=example,dc=org` |
 | `ND_LDAP_BINDPASSWORD` | The password for the Bind DN | `admin_password` |
 | `ND_LDAP_BASE` | The base DN for user search | `ou=users,dc=example,dc=org` |
@@ -135,6 +135,11 @@ You can configure LDAP using the following environment variables:
 | `ND_LDAP_DISABLEDFILTER` | Optional LDAP filter ANDed with `SearchFilter` to flag disabled entries. The filter applies to the user's own attributes — it does not take a `%s`. | `(loginShell=/sbin/nologin)` |
 | `ND_LDAP_ADMINGROUP` | DN of an LDAP group whose members should be Navidrome admins. When set, IsAdmin is recomputed against the directory on every login + liveness sweep. | `cn=nd-admins,ou=groups,dc=example,dc=org` |
 | `ND_LDAP_ADMINFILTER` | Alternative to `AdminGroup` for directories that don't expose `memberOf`. MUST contain `%s` for the username. | `(&(memberOf=cn=nd-admins,...)(uid=%s))` |
+| `ND_LDAP_POOLSIZE` | Maximum number of reusable, exclusively leased LDAP service-account search connections. User-password binds always use separate per-request connections. Values below 1 use the default; values above 64 are capped. Default: `4`. | `4` |
+| `ND_LDAP_MAXCONCURRENT` | Maximum number of in-flight LDAP logins. Excess requests wait until a slot is available or their request context is canceled. Total login sockets are bounded by PoolSize + MaxConcurrent; liveness checks use separate connections. Values below 1 use the default; values above 256 are capped. Default: `16`. | `16` |
+| `ND_LDAP_TIMEOUT` | Maximum duration of an LDAP authentication request, including queueing, connection setup, searches/binds, and user DB synchronization. Default: `10s`. | `10s` |
+| `ND_LDAP_IDLETIMEOUT` | Maximum idle age for a pooled service-account connection. Idle connections are closed by periodic cleanup and before reuse. Values below 1 use the default. Default: `15m`. | `15m` |
+| `ND_LDAP_MAXLIFETIME` | Maximum age of a pooled service-account connection. Active leases are never closed; connections past this age are discarded when returned. Default: `1h`. | `1h` |
 
 ## Translations
 

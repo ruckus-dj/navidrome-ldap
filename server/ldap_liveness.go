@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Masterminds/squirrel"
-	"github.com/go-ldap/ldap"
+	"github.com/go-ldap/ldap/v3"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
