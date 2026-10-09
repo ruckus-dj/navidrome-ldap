@@ -27,6 +27,8 @@ type MockedUserRepo struct {
 }
 
 func (u *MockedUserRepo) CountAll(_ context.Context, qo ...model.QueryOptions) (int64, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return 0, u.Error
 	}
@@ -34,6 +36,8 @@ func (u *MockedUserRepo) CountAll(_ context.Context, qo ...model.QueryOptions) (
 }
 
 func (u *MockedUserRepo) Put(_ context.Context, usr *model.User) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.Error != nil {
 		return u.Error
 	}
@@ -64,6 +68,8 @@ func (u *MockedUserRepo) FindByUsernameWithPassword(ctx context.Context, usernam
 }
 
 func (u *MockedUserRepo) FindFirstAdmin(_ context.Context) (*model.User, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return nil, u.Error
 	}
@@ -76,6 +82,8 @@ func (u *MockedUserRepo) FindFirstAdmin(_ context.Context) (*model.User, error) 
 }
 
 func (u *MockedUserRepo) Get(_ context.Context, id string) (*model.User, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return nil, u.Error
 	}
@@ -88,6 +96,8 @@ func (u *MockedUserRepo) Get(_ context.Context, id string) (*model.User, error) 
 }
 
 func (u *MockedUserRepo) GetAll(_ context.Context, options ...model.QueryOptions) (model.Users, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return nil, u.Error
 	}
@@ -99,6 +109,8 @@ func (u *MockedUserRepo) GetAll(_ context.Context, options ...model.QueryOptions
 }
 
 func (u *MockedUserRepo) UpdateLastLoginAt(_ context.Context, id string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	for _, usr := range u.Data {
 		if usr.ID == id {
 			usr.LastLoginAt = new(time.Now())
@@ -109,6 +121,8 @@ func (u *MockedUserRepo) UpdateLastLoginAt(_ context.Context, id string) error {
 }
 
 func (u *MockedUserRepo) UpdateLastAccessAt(_ context.Context, id string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	for _, usr := range u.Data {
 		if usr.ID == id {
 			usr.LastAccessAt = new(time.Now())
@@ -119,18 +133,26 @@ func (u *MockedUserRepo) UpdateLastAccessAt(_ context.Context, id string) error 
 }
 
 func (u *MockedUserRepo) UpdateLDAPAdmin(ctx context.Context, id string, isAdmin bool) error {
-	usr, err := u.Get(ctx, id)
-	if err != nil {
-		return err
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.Error != nil {
+		return u.Error
 	}
-	if !usr.IsLDAP() {
-		return model.ErrNotFound
+	for _, usr := range u.Data {
+		if usr.ID == id {
+			if !usr.IsLDAP() {
+				return model.ErrNotFound
+			}
+			usr.IsAdmin = isAdmin
+			return nil
+		}
 	}
-	usr.IsAdmin = isAdmin
-	return nil
+	return model.ErrNotFound
 }
 
 func (u *MockedUserRepo) ClearPassword(_ context.Context, id string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.Error != nil {
 		return u.Error
 	}
@@ -147,6 +169,8 @@ func (u *MockedUserRepo) ClearPassword(_ context.Context, id string) error {
 // Library association methods - mock implementations
 
 func (u *MockedUserRepo) GetUserLibraries(_ context.Context, userID string) (model.Libraries, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	if u.Error != nil {
 		return nil, u.Error
 	}
@@ -168,6 +192,8 @@ func (u *MockedUserRepo) GetUserLibraries(_ context.Context, userID string) (mod
 }
 
 func (u *MockedUserRepo) SetUserLibraries(_ context.Context, userID string, libraryIDs []int) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.Error != nil {
 		return u.Error
 	}
@@ -179,6 +205,8 @@ func (u *MockedUserRepo) SetUserLibraries(_ context.Context, userID string, libr
 }
 
 func (u *MockedUserRepo) Delete(_ context.Context, ids ...string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.Error != nil {
 		return u.Error
 	}
@@ -209,14 +237,16 @@ func (u *MockedUserRepo) Save(ctx context.Context, usr *model.User) (string, err
 }
 
 func (u *MockedUserRepo) Update(ctx context.Context, id string, entity model.User, _ ...string) error {
-	if u.Error != nil {
-		return u.Error
-	}
 	entity.ID = id
 	// Mirror userRepository.Update: auth_type is preserved from the
 	// existing row, never taken from the incoming payload.
-	if existing, err := u.Get(ctx, id); err == nil {
-		entity.AuthType = existing.AuthType
+	u.mu.RLock()
+	for _, existing := range u.Data {
+		if existing.ID == id {
+			entity.AuthType = existing.AuthType
+			break
+		}
 	}
+	u.mu.RUnlock()
 	return u.Put(ctx, &entity)
 }

@@ -134,119 +134,10 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 				}
 				ctx = request.WithUsername(ctx, usr.UserName)
 			default:
-				username, _ := p.String("u")
-				pass, _ := p.String("p")
-				if strings.HasPrefix(pass, "enc:") {
-					if dec, err := hex.DecodeString(pass[4:]); err == nil {
-						pass = string(dec)
-					}
-				}
-				token, _ := p.String("t")
-				salt, _ := p.String("s")
-				jwt, _ := p.String("jwt")
-
-				// Blocked attempts get the same response as a wrong password, so they reveal nothing.
-				limitKey := server.ClientIP(r) + "\x00" + strings.ToLower(username)
-				slot, allowed := limiter.acquire(ctx, limitKey)
-				if !allowed {
-					if ctx.Err() != nil {
-						return
-					}
-					log.Warn(ctx, "API: Too many failed login attempts", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr)
-					sendError(w, r, newError(responses.ErrorAuthenticationFail))
+				var handled bool
+				usr, keyPlayer, err, handled = authenticateSubsonicCredentials(ds, limiter, w, r)
+				if handled {
 					return
-				}
-
-				// App-password fast path. When the request carries a `p` or
-				// salt+token, try matching against the user's active app
-				// passwords FIRST. This avoids hitting LDAP on every Subsonic
-				// request from a client using an app password — which is the
-				// whole point of decoupling Subsonic auth from the directory.
-				// LDAP deployments with lockout policies (AD lockoutThreshold,
-				// FreeIPA password policy) would otherwise lock the user's
-				// directory account on every legitimate app-password request.
-				//
-				// LDAP users can also submit their directory password via legacy
-				// `p=` auth: ValidateLogin below checks it with a live LDAP bind
-				// without persisting it. Salt+token auth still requires an app
-				// password because LDAP bind needs the original password.
-				if jwt == "" && (pass != "" || token != "") {
-					lookupUsr, appID, ok := matchAppPassword(ctx, ds, username, pass, token, salt)
-					if ok {
-						if touchErr := ds.AppPassword().Touch(ctx, appID); touchErr != nil {
-							log.Warn(ctx, "API: Failed to bump app password last_used_at", "id", appID, "username", username, touchErr)
-						}
-						slot.release(false)
-						ctx = request.WithUser(ctx, *lookupUsr)
-						next.ServeHTTP(w, r.WithContext(ctx))
-						return
-					}
-					if lookupUsr != nil && lookupUsr.IsLDAP() && pass == "" {
-						log.Warn(ctx, "API: Rejecting non-app-password token auth for LDAP user", "username", username, "remoteAddr", r.RemoteAddr)
-						slot.release(true)
-						sendError(w, r, newError(responses.ErrorAuthenticationFail))
-						return
-					}
-				}
-
-				if pass != "" {
-					// Player API keys are credentials in their own right, not LDAP
-					// passwords. Resolve the named user and verify ownership before
-					// attempting a directory bind (which could trigger lockout).
-					if strings.HasPrefix(decodePassword(pass), consts.APIKeyPrefix) {
-						usr, err = ds.User().FindByUsername(ctx, username)
-						if err == nil {
-							keyPlayer, err = playerFromPasswordKey(ctx, ds, usr, pass)
-							if errors.Is(err, model.ErrInvalidAuth) {
-								// A real password may happen to begin with the key
-								// prefix. Preserve that legacy case unless the string
-								// is an actual key owned by a different user.
-								_, lookupErr := ds.Player().FindByAPIKey(ctx, decodePassword(pass))
-								if errors.Is(lookupErr, model.ErrNotFound) {
-									usr, err = server.ValidateLogin(ctx, ds.User(), username, pass)
-								}
-							}
-						}
-					} else {
-						usr, err = server.ValidateLogin(ctx, ds.User(), username, pass)
-					}
-					if err == nil && usr == nil {
-						// API keys are also accepted in Subsonic's password field for
-						// clients that cannot send the dedicated apiKey parameter.
-						// Resolve the username before checking ownership so a key can
-						// never authenticate as a different user's player.
-						keyUser, lookupErr := ds.User().FindByUsername(ctx, username)
-						if lookupErr != nil {
-							err = lookupErr
-						} else {
-							keyPlayer, err = playerFromPasswordKey(ctx, ds, keyUser, pass)
-							if err == nil {
-								usr = keyUser
-							} else if errors.Is(err, model.ErrInvalidAuth) {
-								err = model.ErrNotFound
-							}
-						}
-					}
-				} else {
-					usr, err = ds.User().FindByUsernameWithPassword(ctx, username)
-					if err == nil {
-						err = validateCredentials(usr, pass, token, salt, jwt)
-						if errors.Is(err, model.ErrInvalidAuth) && pass != "" && jwt == "" {
-							keyPlayer, err = playerFromPasswordKey(ctx, ds, usr, pass)
-						}
-					}
-				}
-
-				invalidLogin := errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrInvalidAuth)
-				slot.release(invalidLogin)
-				switch {
-				case errors.Is(err, context.Canceled):
-					log.Debug(ctx, "API: Request canceled when authenticating", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
-					return
-				case invalidLogin:
-					log.Warn(ctx, "API: Invalid login", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
-				case err != nil:
-					log.Error(ctx, "API: Error authenticating username", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
 				}
 			}
 
@@ -262,6 +153,113 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func authenticateSubsonicCredentials(ds model.DataStore, limiter *authLimiter, w http.ResponseWriter, r *http.Request) (*model.User, *model.Player, error, bool) {
+	ctx := r.Context()
+	p := req.Params(r)
+	username, _ := p.String("u")
+	pass, _ := p.String("p")
+	if strings.HasPrefix(pass, "enc:") {
+		if dec, err := hex.DecodeString(pass[4:]); err == nil {
+			pass = string(dec)
+		}
+	}
+	token, _ := p.String("t")
+	salt, _ := p.String("s")
+	jwt, _ := p.String("jwt")
+
+	// Blocked attempts get the same response as a wrong password, so they reveal nothing.
+	limitKey := server.ClientIP(r) + "\x00" + strings.ToLower(username)
+	slot, allowed := limiter.acquire(ctx, limitKey)
+	if !allowed {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err, true
+		}
+		log.Warn(ctx, "API: Too many failed login attempts", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr)
+		sendError(w, r, newError(responses.ErrorAuthenticationFail))
+		return nil, nil, nil, true
+	}
+
+	// App-password fast path avoids hitting LDAP for every Subsonic request.
+	// LDAP users can still use legacy p= auth via the live bind below.
+	if jwt == "" && (pass != "" || token != "") {
+		lookupUsr, appID, ok := matchAppPassword(ctx, ds, username, pass, token, salt)
+		if ok {
+			if touchErr := ds.AppPassword().Touch(ctx, appID); touchErr != nil {
+				log.Warn(ctx, "API: Failed to bump app password last_used_at", "id", appID, "username", username, touchErr)
+			}
+			slot.release(false)
+			// The helper's caller invokes the continuation after successful auth.
+			return lookupUsr, nil, nil, false
+		}
+		if lookupUsr != nil && lookupUsr.IsLDAP() && pass == "" {
+			log.Warn(ctx, "API: Rejecting non-app-password token auth for LDAP user", "username", username, "remoteAddr", r.RemoteAddr)
+			slot.release(true)
+			sendError(w, r, newError(responses.ErrorAuthenticationFail))
+			return nil, nil, nil, true
+		}
+	}
+
+	usr, keyPlayer, err := authenticateSubsonicPassword(ctx, ds, username, pass, token, salt, jwt)
+	invalidLogin := errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrInvalidAuth)
+	slot.release(invalidLogin)
+	switch {
+	case errors.Is(err, context.Canceled):
+		log.Debug(ctx, "API: Request canceled when authenticating", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
+		return nil, nil, nil, true
+	case invalidLogin:
+		log.Warn(ctx, "API: Invalid login", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
+	case err != nil:
+		log.Error(ctx, "API: Error authenticating username", "auth", "subsonic", "username", username, "remoteAddr", r.RemoteAddr, err)
+	}
+	return usr, keyPlayer, err, false
+}
+
+func authenticateSubsonicPassword(ctx context.Context, ds model.DataStore, username, pass, token, salt, jwt string) (*model.User, *model.Player, error) {
+	var usr *model.User
+	var keyPlayer *model.Player
+	var err error
+	if pass != "" {
+		// Player API keys are credentials in their own right, not LDAP passwords.
+		if strings.HasPrefix(decodePassword(pass), consts.APIKeyPrefix) {
+			usr, err = ds.User().FindByUsername(ctx, username)
+			if err == nil {
+				keyPlayer, err = playerFromPasswordKey(ctx, ds, usr, pass)
+				if errors.Is(err, model.ErrInvalidAuth) {
+					// Preserve legacy real passwords beginning with the key prefix.
+					_, lookupErr := ds.Player().FindByAPIKey(ctx, decodePassword(pass))
+					if errors.Is(lookupErr, model.ErrNotFound) {
+						usr, err = server.ValidateLogin(ctx, ds.User(), username, pass)
+					}
+				}
+			}
+		} else {
+			usr, err = server.ValidateLogin(ctx, ds.User(), username, pass)
+		}
+		if err == nil && usr == nil {
+			keyUser, lookupErr := ds.User().FindByUsername(ctx, username)
+			if lookupErr != nil {
+				err = lookupErr
+			} else {
+				keyPlayer, err = playerFromPasswordKey(ctx, ds, keyUser, pass)
+				if err == nil {
+					usr = keyUser
+				} else if errors.Is(err, model.ErrInvalidAuth) {
+					err = model.ErrNotFound
+				}
+			}
+		}
+	} else {
+		usr, err = ds.User().FindByUsernameWithPassword(ctx, username)
+		if err == nil {
+			err = validateCredentials(usr, pass, token, salt, jwt)
+			if errors.Is(err, model.ErrInvalidAuth) && pass != "" && jwt == "" {
+				keyPlayer, err = playerFromPasswordKey(ctx, ds, usr, pass)
+			}
+		}
+	}
+	return usr, keyPlayer, err
 }
 
 var apiKeyConflicts = []string{"u", "p", "t", "s", "jwt"}
