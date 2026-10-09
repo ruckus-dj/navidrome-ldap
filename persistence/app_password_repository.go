@@ -20,7 +20,6 @@ type appPasswordRepository struct {
 
 func NewAppPasswordRepository(ctx context.Context, db dbx.Builder) model.AppPasswordRepository {
 	r := &appPasswordRepository{}
-	r.ctx = ctx
 	r.db = db
 	r.tableName = "user_app_password"
 	// Ensure the shared encryption key has been initialized. The user
@@ -29,15 +28,14 @@ func NewAppPasswordRepository(ctx context.Context, db dbx.Builder) model.AppPass
 	// here too.
 	once.Do(func() {
 		ur := &userRepository{}
-		ur.ctx = ctx
 		ur.db = db
 		ur.tableName = "user"
-		_ = ur.initPasswordEncryptionKey()
+		_ = ur.initPasswordEncryptionKey(ctx)
 	})
 	return r
 }
 
-func (r *appPasswordRepository) Put(ap *model.AppPassword) error {
+func (r *appPasswordRepository) Put(ctx context.Context, ap *model.AppPassword) error {
 	if ap.UserID == "" {
 		return errors.New("user_id is required")
 	}
@@ -54,7 +52,7 @@ func (r *appPasswordRepository) Put(ap *model.AppPassword) error {
 		ap.CreatedAt = time.Now()
 	}
 
-	encrypted, err := utils.Encrypt(r.ctx, encKey, ap.NewPassword)
+	encrypted, err := utils.Encrypt(ctx, encKey, ap.NewPassword)
 	if err != nil {
 		return fmt.Errorf("encrypting app password: %w", err)
 	}
@@ -72,16 +70,16 @@ func (r *appPasswordRepository) Put(ap *model.AppPassword) error {
 		return fmt.Errorf("converting app password to SQL args: %w", err)
 	}
 	insert := Insert(r.tableName).SetMap(values)
-	if _, err := r.executeSQL(insert); err != nil {
+	if _, err := r.executeSQL(ctx, insert); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *appPasswordRepository) Get(idVal string) (*model.AppPassword, error) {
-	sel := r.newSelect().Columns("*").Where(Eq{"id": idVal})
+func (r *appPasswordRepository) Get(ctx context.Context, idVal string) (*model.AppPassword, error) {
+	sel := r.newSelect(ctx).Columns("*").Where(Eq{"id": idVal})
 	var res model.AppPassword
-	if err := r.queryOne(sel, &res); err != nil {
+	if err := r.queryOne(ctx, sel, &res); err != nil {
 		return nil, err
 	}
 	// Get is intended for callers who need metadata only (ownership checks,
@@ -91,10 +89,10 @@ func (r *appPasswordRepository) Get(idVal string) (*model.AppPassword, error) {
 	return &res, nil
 }
 
-func (r *appPasswordRepository) List(userID string) (model.AppPasswords, error) {
-	sel := r.newSelect().Columns("*").Where(Eq{"user_id": userID}).OrderBy("created_at DESC")
+func (r *appPasswordRepository) List(ctx context.Context, userID string) (model.AppPasswords, error) {
+	sel := r.newSelect(ctx).Columns("*").Where(Eq{"user_id": userID}).OrderBy("created_at DESC")
 	var res model.AppPasswords
-	if err := r.queryAll(sel, &res); err != nil {
+	if err := r.queryAll(ctx, sel, &res); err != nil {
 		return nil, err
 	}
 	// Never expose the encrypted blob via List — it's only used internally.
@@ -104,18 +102,18 @@ func (r *appPasswordRepository) List(userID string) (model.AppPasswords, error) 
 	return res, nil
 }
 
-func (r *appPasswordRepository) FindActiveByUser(userID string) (model.AppPasswords, error) {
-	sel := r.newSelect().Columns("*").
+func (r *appPasswordRepository) FindActiveByUser(ctx context.Context, userID string) (model.AppPasswords, error) {
+	sel := r.newSelect(ctx).Columns("*").
 		Where(Eq{"user_id": userID}).
 		Where(Eq{"revoked_at": nil})
 	var res model.AppPasswords
-	if err := r.queryAll(sel, &res); err != nil {
+	if err := r.queryAll(ctx, sel, &res); err != nil {
 		return nil, err
 	}
 	for i := range res {
-		plain, err := utils.Decrypt(r.ctx, encKey, res[i].Password)
+			plain, err := utils.Decrypt(ctx, encKey, res[i].Password)
 		if err != nil {
-			log.Error(r.ctx, "Error decrypting app password", "id", res[i].ID, "userID", userID, err)
+			log.Error(ctx, "Error decrypting app password", "id", res[i].ID, "userID", userID, err)
 			continue
 		}
 		res[i].Password = plain
@@ -123,12 +121,12 @@ func (r *appPasswordRepository) FindActiveByUser(userID string) (model.AppPasswo
 	return res, nil
 }
 
-func (r *appPasswordRepository) Revoke(idVal string) error {
+func (r *appPasswordRepository) Revoke(ctx context.Context, idVal string) error {
 	upd := Update(r.tableName).
 		Where(Eq{"id": idVal}).
 		Where(Eq{"revoked_at": nil}).
 		Set("revoked_at", time.Now())
-	count, err := r.executeSQL(upd)
+	count, err := r.executeSQL(ctx, upd)
 	if err != nil {
 		return err
 	}
@@ -138,15 +136,15 @@ func (r *appPasswordRepository) Revoke(idVal string) error {
 	return nil
 }
 
-func (r *appPasswordRepository) RevokeAllForUser(userID string) (int64, error) {
+func (r *appPasswordRepository) RevokeAllForUser(ctx context.Context, userID string) (int64, error) {
 	upd := Update(r.tableName).
 		Where(Eq{"user_id": userID}).
 		Where(Eq{"revoked_at": nil}).
 		Set("revoked_at", time.Now())
-	return r.executeSQL(upd)
+	return r.executeSQL(ctx, upd)
 }
 
-func (r *appPasswordRepository) Touch(idVal string) error {
+func (r *appPasswordRepository) Touch(ctx context.Context, idVal string) error {
 	// Filter on revoked_at to avoid bumping last_used_at on a revoked row
 	// under a TOCTOU race (a request mid-auth completing after another
 	// request revokes the same app password). Misleading audit data
@@ -155,7 +153,7 @@ func (r *appPasswordRepository) Touch(idVal string) error {
 		Where(Eq{"id": idVal}).
 		Where(Eq{"revoked_at": nil}).
 		Set("last_used_at", time.Now())
-	_, err := r.executeSQL(upd)
+	_, err := r.executeSQL(ctx, upd)
 	return err
 }
 

@@ -27,7 +27,7 @@ type livenessProbe func(userName string) (active bool, reason string, err error)
 type adminProbeFn func(userName string) (isAdmin bool, err error)
 
 type ldapAdminUpdater interface {
-	UpdateLDAPAdmin(id string, isAdmin bool) error
+	UpdateLDAPAdmin(ctx context.Context, id string, isAdmin bool) error
 }
 
 // LDAPLivenessCheck reconciles every LDAP-backed user against the
@@ -51,7 +51,7 @@ func LDAPLivenessCheck(ctx context.Context, ds model.DataStore) {
 	// handshake + bind on every tick when there's nothing to reconcile
 	// (just-after-rollout, mostly-local installs that enabled the feature
 	// speculatively, etc.).
-	users, err := ds.User(ctx).GetAll(model.QueryOptions{
+	users, err := ds.User().GetAll(ctx, model.QueryOptions{
 		Filters: squirrel.Eq{"auth_type": model.AuthTypeLDAP},
 	})
 	if err != nil {
@@ -94,7 +94,6 @@ func runLDAPLivenessCheck(ctx context.Context, ds model.DataStore, probe livenes
 		return
 	}
 
-	appRepo := ds.AppPassword(ctx)
 	checked := 0
 	revoked := 0
 	adminChanged := 0
@@ -113,18 +112,27 @@ func runLDAPLivenessCheck(ctx context.Context, ds model.DataStore, probe livenes
 		checked++
 
 		if !active {
-			n, revokeErr := appRepo.RevokeAllForUser(u.ID)
+			var appPasswords, playerAPIKeys int64
+			revokeErr := ds.WithTx(func(tx model.DataStore) error {
+				var err error
+				appPasswords, err = tx.AppPassword().RevokeAllForUser(ctx, u.ID)
+				if err != nil {
+					return err
+				}
+				playerAPIKeys, err = tx.Player().RevokeAllAPIKeysForUser(ctx, u.ID)
+				return err
+			}, "ldap-liveness-revoke")
 			if revokeErr != nil {
-				log.Error(ctx, "LDAP liveness: failed to revoke app passwords", "user", u.UserName, revokeErr)
+				log.Error(ctx, "LDAP liveness: failed to revoke credentials", "user", u.UserName, revokeErr)
 			} else {
 				revoked++
-				if n > 0 {
+				if appPasswords+playerAPIKeys > 0 {
 					// Only log the "revoked" line when there was actually
 					// something to revoke. Otherwise an offboarding wave on
-					// a directory with few app-password users floods INFO
-					// with "appPasswords=0" lines on every tick.
-					log.Info(ctx, "LDAP liveness: revoked app passwords for user no longer authorized",
-						"user", u.UserName, "reason", reason, "appPasswords", n)
+					// a directory with few credentialed users floods INFO
+					// with zero-count lines on every tick.
+					log.Info(ctx, "LDAP liveness: revoked credentials for user no longer authorized",
+						"user", u.UserName, "reason", reason, "appPasswords", appPasswords, "playerAPIKeys", playerAPIKeys)
 				}
 			}
 		}
@@ -138,8 +146,8 @@ func runLDAPLivenessCheck(ctx context.Context, ds model.DataStore, probe livenes
 			if adminErr != nil {
 				log.Warn(ctx, "LDAP liveness: admin probe failed; preserving IsAdmin", "user", u.UserName, adminErr)
 			} else if u.IsAdmin != newIsAdmin {
-				updater := ds.User(ctx).(ldapAdminUpdater)
-				if err := updater.UpdateLDAPAdmin(u.ID, newIsAdmin); err != nil {
+				updater := ds.User().(ldapAdminUpdater)
+				if err := updater.UpdateLDAPAdmin(ctx, u.ID, newIsAdmin); err != nil {
 					log.Error(ctx, "LDAP liveness: failed to persist IsAdmin change", "user", u.UserName, err)
 				} else {
 					adminChanged++

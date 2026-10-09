@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // AppPassword is a per-device credential a user can generate for use with
 // Subsonic API clients. It is independent of the user's main password (LDAP or
@@ -38,11 +41,11 @@ type AppPasswords []AppPassword
 // performs a soft revocation (sets RevokedAt); the row remains so audit trails
 // and last-used timestamps survive.
 type AppPasswordRepository interface {
-	Put(ap *AppPassword) error
-	Get(id string) (*AppPassword, error)
-	List(userID string) (AppPasswords, error)
-	FindActiveByUser(userID string) (AppPasswords, error)
-	Revoke(id string) error
-	RevokeAllForUser(userID string) (int64, error)
-	Touch(id string) error
+	Put(ctx context.Context, ap *AppPassword) error
+	Get(ctx context.Context, id string) (*AppPassword, error)
+	List(ctx context.Context, userID string) (AppPasswords, error)
+	FindActiveByUser(ctx context.Context, userID string) (AppPasswords, error)
+	Revoke(ctx context.Context, id string) error
+	RevokeAllForUser(ctx context.Context, userID string) (int64, error)
+	Touch(ctx context.Context, id string) error
 }

@@ -24,7 +24,7 @@ func (api *Router) authenticateByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	usr, err := server.ValidateLogin(api.ds.User(ctx), body.Username, body.Pw)
+	usr, err := server.ValidateLogin(ctx, api.ds.User(), body.Username, body.Pw)
 	if err != nil {
 		api.internalError(w, r, err)
 		return
@@ -41,7 +41,7 @@ func (api *Router) signIn(w http.ResponseWriter, r *http.Request, usr *model.Use
 	ctx := r.Context()
 	// Best-effort, like the web UI's validateLogin: without it, Jellyfin-only users show a
 	// never/stale "Last Login" in the admin UI.
-	if err := api.ds.User(ctx).UpdateLastLoginAt(usr.ID); err != nil {
+	if err := api.ds.User().UpdateLastLoginAt(ctx, usr.ID); err != nil {
 		log.Error(ctx, "Jellyfin API: could not update last login date", "username", usr.UserName, err)
 	}
 

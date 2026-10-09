@@ -57,7 +57,7 @@ func listAppPasswords(ds model.DataStore) http.HandlerFunc {
 		ctx := r.Context()
 		userID := ctx.Value("userID").(string) //nolint:staticcheck
 
-		if _, err := ds.User(ctx).Get(userID); err != nil {
+		if _, err := ds.User().Get(ctx, userID); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				http.Error(w, "User not found", http.StatusNotFound)
 				return
@@ -67,7 +67,7 @@ func listAppPasswords(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		items, err := ds.AppPassword(ctx).List(userID)
+		items, err := ds.AppPassword().List(ctx, userID)
 		if err != nil {
 			log.Error(ctx, "Error listing app passwords", "userID", userID, err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -101,7 +101,7 @@ func createAppPassword(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		if _, err := ds.User(ctx).Get(userID); err != nil {
+		if _, err := ds.User().Get(ctx, userID); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				http.Error(w, "User not found", http.StatusNotFound)
 				return
@@ -122,7 +122,7 @@ func createAppPassword(ds model.DataStore) http.HandlerFunc {
 			Name:        body.Name,
 			NewPassword: secret,
 		}
-		if err := ds.AppPassword(ctx).Put(ap); err != nil {
+		if err := ds.AppPassword().Put(ctx, ap); err != nil {
 			log.Error(ctx, "Error creating app password", "userID", userID, "name", body.Name, err)
 			http.Error(w, "Failed to create app password", http.StatusInternalServerError)
 			return
@@ -167,7 +167,7 @@ func revokeAppPassword(ds model.DataStore) http.HandlerFunc {
 		// Make sure the app password belongs to the user from the URL — this
 		// prevents an admin from accidentally revoking someone else's app
 		// password by hitting /user/$other/app-password/$id.
-		ap, err := ds.AppPassword(ctx).Get(appPasswordID)
+		ap, err := ds.AppPassword().Get(ctx, appPasswordID)
 		if err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				http.Error(w, "App password not found", http.StatusNotFound)
@@ -182,7 +182,7 @@ func revokeAppPassword(ds model.DataStore) http.HandlerFunc {
 			return
 		}
 
-		if err := ds.AppPassword(ctx).Revoke(appPasswordID); err != nil {
+		if err := ds.AppPassword().Revoke(ctx, appPasswordID); err != nil {
 			if errors.Is(err, model.ErrNotFound) {
 				http.Error(w, "App password not found", http.StatusNotFound)
 				return
@@ -206,7 +206,7 @@ func revokeAllAppPasswords(ds model.DataStore) http.HandlerFunc {
 		ctx := r.Context()
 		userID := ctx.Value("userID").(string) //nolint:staticcheck
 
-		count, err := ds.AppPassword(ctx).RevokeAllForUser(userID)
+		count, err := ds.AppPassword().RevokeAllForUser(ctx, userID)
 		if err != nil {
 			log.Error(ctx, "Error revoking all app passwords", "userID", userID, err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)

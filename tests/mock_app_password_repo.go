@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -22,7 +23,7 @@ type MockedAppPasswordRepo struct {
 	Data map[string]*model.AppPassword
 }
 
-func (m *MockedAppPasswordRepo) Put(ap *model.AppPassword) error {
+func (m *MockedAppPasswordRepo) Put(_ context.Context, ap *model.AppPassword) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -44,7 +45,7 @@ func (m *MockedAppPasswordRepo) Put(ap *model.AppPassword) error {
 	return nil
 }
 
-func (m *MockedAppPasswordRepo) Get(id string) (*model.AppPassword, error) {
+func (m *MockedAppPasswordRepo) Get(_ context.Context, id string) (*model.AppPassword, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -59,7 +60,7 @@ func (m *MockedAppPasswordRepo) Get(id string) (*model.AppPassword, error) {
 	return &cp, nil
 }
 
-func (m *MockedAppPasswordRepo) List(userID string) (model.AppPasswords, error) {
+func (m *MockedAppPasswordRepo) List(_ context.Context, userID string) (model.AppPasswords, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -77,7 +78,7 @@ func (m *MockedAppPasswordRepo) List(userID string) (model.AppPasswords, error) 
 	return out, nil
 }
 
-func (m *MockedAppPasswordRepo) FindActiveByUser(userID string) (model.AppPasswords, error) {
+func (m *MockedAppPasswordRepo) FindActiveByUser(_ context.Context, userID string) (model.AppPasswords, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -93,7 +94,7 @@ func (m *MockedAppPasswordRepo) FindActiveByUser(userID string) (model.AppPasswo
 	return out, nil
 }
 
-func (m *MockedAppPasswordRepo) Revoke(id string) error {
+func (m *MockedAppPasswordRepo) Revoke(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -111,7 +112,7 @@ func (m *MockedAppPasswordRepo) Revoke(id string) error {
 	return nil
 }
 
-func (m *MockedAppPasswordRepo) RevokeAllForUser(userID string) (int64, error) {
+func (m *MockedAppPasswordRepo) RevokeAllForUser(_ context.Context, userID string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {
@@ -128,7 +129,7 @@ func (m *MockedAppPasswordRepo) RevokeAllForUser(userID string) (int64, error) {
 	return n, nil
 }
 
-func (m *MockedAppPasswordRepo) Touch(id string) error {
+func (m *MockedAppPasswordRepo) Touch(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Error != nil {

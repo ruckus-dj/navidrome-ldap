@@ -28,12 +28,12 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		w = httptest.NewRecorder()
 		ds = &tests.MockDataStore{}
 
-		Expect(ds.User(context.TODO()).Put(&model.User{
+		Expect(ds.User().Put(context.TODO(), &model.User{
 			ID:          userID,
 			UserName:    username,
 			NewPassword: mainPassword,
 		})).To(Succeed())
-		Expect(ds.AppPassword(context.TODO()).Put(&model.AppPassword{
+		Expect(ds.AppPassword().Put(context.TODO(), &model.AppPassword{
 			UserID:      userID,
 			Name:        "iPhone",
 			NewPassword: appSecret,
@@ -68,10 +68,10 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		})
 
 		It("rejects a revoked app password", func() {
-			active, err := ds.AppPassword(context.TODO()).FindActiveByUser(userID)
+			active, err := ds.AppPassword().FindActiveByUser(context.TODO(), userID)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(active).To(HaveLen(1))
-			Expect(ds.AppPassword(context.TODO()).Revoke(active[0].ID)).To(Succeed())
+			Expect(ds.AppPassword().Revoke(context.TODO(), active[0].ID)).To(Succeed())
 
 			r := newGetRequest("u="+username, "p="+appSecret)
 			authenticate(ds)(nextHandler).ServeHTTP(w, r)
@@ -112,9 +112,9 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		})
 
 		It("rejects revoked app password tokens", func() {
-			active, err := ds.AppPassword(context.TODO()).FindActiveByUser(userID)
+			active, err := ds.AppPassword().FindActiveByUser(context.TODO(), userID)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(ds.AppPassword(context.TODO()).Revoke(active[0].ID)).To(Succeed())
+			Expect(ds.AppPassword().Revoke(context.TODO(), active[0].ID)).To(Succeed())
 
 			token := fmt.Sprintf("%x", md5.Sum([]byte(appSecret+salt)))
 			r := newGetRequest("u="+username, "t="+token, "s="+salt)
@@ -126,7 +126,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 
 	When("the user has no app passwords", func() {
 		It("does not interfere with main-password auth", func() {
-			Expect(ds.User(context.TODO()).Put(&model.User{
+			Expect(ds.User().Put(context.TODO(), &model.User{
 				ID:          "uid-bob",
 				UserName:    "bob",
 				NewPassword: "bobpw",
@@ -139,7 +139,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		})
 
 		It("rejects an invalid main password without trying app passwords", func() {
-			Expect(ds.User(context.TODO()).Put(&model.User{
+			Expect(ds.User().Put(context.TODO(), &model.User{
 				ID:          "uid-bob",
 				UserName:    "bob",
 				NewPassword: "bobpw",
@@ -158,7 +158,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		authenticate(ds)(nextHandler).ServeHTTP(w, r)
 
 		Expect(nextHandler.called).To(BeTrue())
-		all, err := ds.AppPassword(context.TODO()).List(userID)
+		all, err := ds.AppPassword().List(context.TODO(), userID)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(all).To(HaveLen(1))
 		Expect(all[0].LastUsedAt).ToNot(BeNil())
@@ -174,7 +174,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		authenticate(ds)(nextHandler).ServeHTTP(w, r)
 
 		Expect(nextHandler.called).To(BeTrue())
-		usr, err := ds.User(context.TODO()).FindByUsername(username)
+		usr, err := ds.User().FindByUsername(context.TODO(), username)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(usr.LastLoginAt).To(BeNil(),
 			"LastLoginAt should not be set — that would mean ValidateLogin "+
@@ -188,7 +188,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 	It("matches an app password whose plaintext starts with `enc:`", func() {
 		// Plaintext that looks like an `enc:`-encoded value but isn't.
 		const trickyPlaintext = "enc:6162"
-		Expect(ds.AppPassword(context.TODO()).Put(&model.AppPassword{
+		Expect(ds.AppPassword().Put(context.TODO(), &model.AppPassword{
 			UserID:      userID,
 			Name:        "tricky",
 			NewPassword: trickyPlaintext,
@@ -213,7 +213,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		const ldapAppPlaintext = "ldap-tempus-app-plaintext"
 
 		BeforeEach(func() {
-			Expect(ds.User(context.TODO()).Put(&model.User{
+			Expect(ds.User().Put(context.TODO(), &model.User{
 				ID:       ldapUserID,
 				UserName: ldapUser,
 				AuthType: model.AuthTypeLDAP,
@@ -222,7 +222,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 				// it cannot be used for /rest auth.
 				NewPassword: ldapDirPlaintext,
 			})).To(Succeed())
-			Expect(ds.AppPassword(context.TODO()).Put(&model.AppPassword{
+			Expect(ds.AppPassword().Put(context.TODO(), &model.AppPassword{
 				UserID:      ldapUserID,
 				Name:        "iPhone",
 				NewPassword: ldapAppPlaintext,
@@ -261,7 +261,7 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		// in play.
 		It("accepts a JWT minted for the LDAP user", func() {
 			auth.Init(ds)
-			ldapUsr, err := ds.User(context.TODO()).FindByUsername(ldapUser)
+			ldapUsr, err := ds.User().FindByUsername(context.TODO(), ldapUser)
 			Expect(err).ToNot(HaveOccurred())
 			jwt, err := auth.CreateToken(ldapUsr)
 			Expect(err).ToNot(HaveOccurred())
@@ -284,11 +284,11 @@ var _ = Describe("App Password Subsonic Auth", func() {
 		const emptyUserID = "uid-scrubbed"
 
 		BeforeEach(func() {
-			Expect(ds.User(context.TODO()).Put(&model.User{
+			Expect(ds.User().Put(context.TODO(), &model.User{
 				ID:       emptyUserID,
 				UserName: emptyUser,
 			})).To(Succeed())
-			Expect(ds.User(context.TODO()).ClearPassword(emptyUserID)).To(Succeed())
+			Expect(ds.User().ClearPassword(context.TODO(), emptyUserID)).To(Succeed())
 		})
 
 		It("rejects empty `p=`", func() {

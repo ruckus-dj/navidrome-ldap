@@ -1,7 +1,10 @@
 package model
 
 import (
+	"context"
 	"time"
+
+	"github.com/deluan/rest"
 )
 
 // AuthType values for User.AuthType. Drives password-storage and
@@ -62,25 +65,26 @@ func (u User) IsLDAP() bool {
 type Users []User
 
 type UserRepository interface {
-	ResourceRepository
-	CountAll(...QueryOptions) (int64, error)
-	Delete(id string) error
-	Get(id string) (*User, error)
-	GetAll(options ...QueryOptions) (Users, error)
-	Put(*User) error
-	UpdateLastLoginAt(id string) error
-	UpdateLastAccessAt(id string) error
-	FindFirstAdmin() (*User, error)
+	rest.Repository[User]
+	rest.Persistable[User]
+	CountAll(ctx context.Context, options ...QueryOptions) (int64, error)
+	Get(ctx context.Context, id string) (*User, error)
+	GetAll(ctx context.Context, options ...QueryOptions) (Users, error)
+	Put(ctx context.Context, u *User) error
+	UpdateLastLoginAt(ctx context.Context, id string) error
+	UpdateLastAccessAt(ctx context.Context, id string) error
+	FindFirstAdmin(ctx context.Context) (*User, error)
 	// FindByUsername must be case-insensitive
-	FindByUsername(username string) (*User, error)
+	FindByUsername(ctx context.Context, username string) (*User, error)
 	// FindByUsernameWithPassword is the same as above, but also returns the decrypted password
-	FindByUsernameWithPassword(username string) (*User, error)
+	FindByUsernameWithPassword(ctx context.Context, username string) (*User, error)
 	// ClearPassword removes any persisted password from the user record. Used
 	// when promoting a user to LDAP-backed: their directory password must
 	// not remain reversibly-encrypted in the DB.
-	ClearPassword(id string) error
+	ClearPassword(ctx context.Context, id string) error
+	UpdateLDAPAdmin(ctx context.Context, id string, isAdmin bool) error
 
 	// Library association methods
-	GetUserLibraries(userID string) (Libraries, error)
-	SetUserLibraries(userID string, libraryIDs []int) error
+	GetUserLibraries(ctx context.Context, userID string) (Libraries, error)
+	SetUserLibraries(ctx context.Context, userID string, libraryIDs []int) error
 }

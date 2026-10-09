@@ -50,7 +50,7 @@ func TestAuthenticateByName_authenticatesLDAPCredentials(t *testing.T) {
 	require.NotEmpty(t, result.AccessToken)
 	require.Equal(t, int32(2), binds.Load())
 
-	user, err := ds.User(context.Background()).FindByUsernameWithPassword("ldapper")
+	user, err := ds.User().FindByUsernameWithPassword(context.Background(), "ldapper")
 	require.NoError(t, err)
 	require.True(t, user.IsLDAP())
 	require.Empty(t, user.Password)

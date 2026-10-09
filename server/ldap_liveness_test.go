@@ -20,6 +20,7 @@ var _ = Describe("LDAP liveness check", func() {
 		ds               *tests.MockDataStore
 		users            model.UserRepository
 		appPwds          model.AppPasswordRepository
+		players          model.PlayerRepository
 		originalHost     string
 		originalSearch   string
 		originalDisabled string
@@ -27,8 +28,9 @@ var _ = Describe("LDAP liveness check", func() {
 
 	BeforeEach(func() {
 		ds = &tests.MockDataStore{}
-		users = ds.User(context.Background())
-		appPwds = ds.AppPassword(context.Background())
+		users = ds.User()
+		appPwds = ds.AppPassword()
+		players = ds.Player()
 		originalHost = conf.Server.LDAP.Host
 		originalSearch = conf.Server.LDAP.SearchFilter
 		originalDisabled = conf.Server.LDAP.DisabledFilter
@@ -42,22 +44,24 @@ var _ = Describe("LDAP liveness check", func() {
 
 	// Helper: seed one LDAP user with one active app password.
 	seedLDAPUser := func(id, username string) {
-		Expect(users.Put(&model.User{
+		Expect(users.Put(context.Background(), &model.User{
 			ID:       id,
 			UserName: username,
 			AuthType: model.AuthTypeLDAP,
 		})).To(Succeed())
-		Expect(users.ClearPassword(id)).To(Succeed())
-		Expect(appPwds.Put(&model.AppPassword{
+		Expect(users.ClearPassword(context.Background(), id)).To(Succeed())
+		Expect(appPwds.Put(context.Background(), &model.AppPassword{
 			UserID:      id,
 			Name:        "iPhone",
 			NewPassword: "secret-" + id,
 		})).To(Succeed())
+		Expect(players.Put(context.Background(), &model.Player{ID: "player-" + id, UserId: id})).To(Succeed())
+		Expect(players.SetAPIKey(context.Background(), "player-"+id, "nds_"+id)).To(Succeed())
 	}
 
 	// Helper: count active app passwords for a given user.
 	activeCount := func(userID string) int {
-		active, err := appPwds.FindActiveByUser(userID)
+		active, err := appPwds.FindActiveByUser(context.Background(), userID)
 		Expect(err).ToNot(HaveOccurred())
 		return len(active)
 	}
@@ -65,7 +69,7 @@ var _ = Describe("LDAP liveness check", func() {
 	// Helper: load every LDAP-backed user from the mock store, mirroring
 	// the production query in LDAPLivenessCheck.
 	loadLDAPUsers := func() model.Users {
-		out, err := ds.User(context.Background()).GetAll(model.QueryOptions{
+		out, err := ds.User().GetAll(context.Background(), model.QueryOptions{
 			Filters: squirrel.Eq{"auth_type": model.AuthTypeLDAP},
 		})
 		Expect(err).ToNot(HaveOccurred())
@@ -118,6 +122,8 @@ var _ = Describe("LDAP liveness check", func() {
 
 			Expect(activeCount("u-missing")).To(Equal(0))
 			Expect(activeCount("u-active")).To(Equal(1))
+			_, err := players.FindByAPIKey(context.Background(), "nds_u-missing")
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("revokes app passwords for users matched by DisabledFilter", func() {
@@ -129,6 +135,8 @@ var _ = Describe("LDAP liveness check", func() {
 			runLDAPLivenessCheck(context.Background(), ds, probe, nil, loadLDAPUsers())
 
 			Expect(activeCount("u-disabled")).To(Equal(0))
+			_, err := players.FindByAPIKey(context.Background(), "nds_u-disabled")
+			Expect(err).To(HaveOccurred())
 		})
 
 		It("does not revoke when the probe returns a transient error", func() {
@@ -143,12 +151,12 @@ var _ = Describe("LDAP liveness check", func() {
 		})
 
 		It("ignores non-LDAP users even if they slip through GetAll", func() {
-			Expect(users.Put(&model.User{
+			Expect(users.Put(context.Background(), &model.User{
 				ID:          "u-local",
 				UserName:    "localuser",
 				NewPassword: "local-secret",
 			})).To(Succeed())
-			Expect(appPwds.Put(&model.AppPassword{
+			Expect(appPwds.Put(context.Background(), &model.AppPassword{
 				UserID:      "u-local",
 				Name:        "iPad",
 				NewPassword: "local-app",
@@ -156,7 +164,7 @@ var _ = Describe("LDAP liveness check", func() {
 
 			// Pass every user (LDAP and local) directly, simulating a future
 			// caller that forgot to scope by auth_type.
-			everyone, err := users.GetAll()
+			everyone, err := users.GetAll(context.Background())
 			Expect(err).ToNot(HaveOccurred())
 
 			// Probe says "missing" for everyone — should still spare the local user.
@@ -181,12 +189,12 @@ var _ = Describe("LDAP liveness check", func() {
 
 		It("does not log the revoke line when the user had zero app passwords", func() {
 			// Seed a user with no app passwords at all.
-			Expect(users.Put(&model.User{
+			Expect(users.Put(context.Background(), &model.User{
 				ID:       "u-no-app-pwds",
 				UserName: "lonely",
 				AuthType: model.AuthTypeLDAP,
 			})).To(Succeed())
-			Expect(users.ClearPassword("u-no-app-pwds")).To(Succeed())
+			Expect(users.ClearPassword(context.Background(), "u-no-app-pwds")).To(Succeed())
 
 			hook, cleanup := tests.LogHook()
 			defer cleanup()
@@ -227,7 +235,7 @@ var _ = Describe("LDAP liveness check", func() {
 
 			matched := false
 			for _, e := range hook.AllEntries() {
-				if e.Level == logrus.InfoLevel && strings.Contains(e.Message, "revoked app passwords") {
+				if e.Level == logrus.InfoLevel && strings.Contains(e.Message, "revoked credentials") {
 					matched = true
 					break
 				}
@@ -247,13 +255,13 @@ var _ = Describe("LDAP liveness check", func() {
 
 			runLDAPLivenessCheck(context.Background(), ds, alwaysActive, adminProbe, loadLDAPUsers())
 
-			got, err := users.Get("u-promote")
+			got, err := users.Get(context.Background(), "u-promote")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.IsAdmin).To(BeTrue())
 		})
 
 		It("demotes a user removed from the admin group", func() {
-			Expect(users.Put(&model.User{
+			Expect(users.Put(context.Background(), &model.User{
 				ID:       "u-demote",
 				UserName: "demote-me",
 				AuthType: model.AuthTypeLDAP,
@@ -263,13 +271,13 @@ var _ = Describe("LDAP liveness check", func() {
 
 			runLDAPLivenessCheck(context.Background(), ds, alwaysActive, adminProbe, loadLDAPUsers())
 
-			got, err := users.Get("u-demote")
+			got, err := users.Get(context.Background(), "u-demote")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.IsAdmin).To(BeFalse())
 		})
 
 		It("preserves IsAdmin when the admin probe returns an error", func() {
-			Expect(users.Put(&model.User{
+			Expect(users.Put(context.Background(), &model.User{
 				ID:       "u-flaky-admin",
 				UserName: "flakyadmin",
 				AuthType: model.AuthTypeLDAP,
@@ -281,19 +289,19 @@ var _ = Describe("LDAP liveness check", func() {
 
 			runLDAPLivenessCheck(context.Background(), ds, alwaysActive, adminProbe, loadLDAPUsers())
 
-			got, err := users.Get("u-flaky-admin")
+			got, err := users.Get(context.Background(), "u-flaky-admin")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.IsAdmin).To(BeTrue())
 		})
 
 		It("demotes inactive users that were admin", func() {
-			Expect(users.Put(&model.User{
+			Expect(users.Put(context.Background(), &model.User{
 				ID:       "u-gone-admin",
 				UserName: "gone",
 				AuthType: model.AuthTypeLDAP,
 				IsAdmin:  true,
 			})).To(Succeed())
-			Expect(appPwds.Put(&model.AppPassword{
+			Expect(appPwds.Put(context.Background(), &model.AppPassword{
 				UserID: "u-gone-admin", Name: "iPad", NewPassword: "p",
 			})).To(Succeed())
 			missing := func(name string) (bool, string, error) { return false, "missing", nil }
@@ -301,7 +309,7 @@ var _ = Describe("LDAP liveness check", func() {
 
 			runLDAPLivenessCheck(context.Background(), ds, missing, adminProbe, loadLDAPUsers())
 
-			got, err := users.Get("u-gone-admin")
+			got, err := users.Get(context.Background(), "u-gone-admin")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(got.IsAdmin).To(BeFalse())
 			Expect(activeCount("u-gone-admin")).To(Equal(0))
